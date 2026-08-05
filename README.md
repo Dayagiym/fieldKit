@@ -1,5 +1,5 @@
 # fieldKit
-post-install script for a lightweight field network technician laptop using Linux Mint 22.3 Mate'
+post-install script for a lightweight deployment toolkit for network technicians and IT professionals using Linux Mint 22.3 Mate'
 
 Mint FieldKit
 A lightweight Linux Mint MATE workstation optimized for field technicians, network engineers, and technical service work.
