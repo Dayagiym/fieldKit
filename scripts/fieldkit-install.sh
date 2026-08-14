@@ -87,6 +87,28 @@ is_available() {
     apt-cache show "${package}" >/dev/null 2>&1
 }
 
+validate_catalog() {
+    local line_number=0
+    local line action package name recommendation reason extra
+
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        ((line_number += 1))
+        [[ -z "${line}" || "${line}" == \#* ]] && continue
+
+        IFS='|' read -r action package name recommendation reason extra <<< "${line}"
+        [[ -z "${action}" || -z "${package}" || -z "${name}" || -z "${recommendation}" || -z "${reason}" || -n "${extra}" ]] && \
+            fail "Malformed package catalog entry at ${CONFIG_FILE}:${line_number}"
+
+        case "${action}" in
+            install|remove) ;;
+            *) fail "Invalid action '${action}' at ${CONFIG_FILE}:${line_number}" ;;
+        esac
+
+        [[ "${package}" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || \
+            fail "Invalid package name '${package}' at ${CONFIG_FILE}:${line_number}"
+    done < "${CONFIG_FILE}"
+}
+
 load_catalog() {
     REMOVE_PACKAGES=()
     REMOVE_NAMES=()
@@ -234,6 +256,7 @@ choose_packages() {
     fi
 }
 
+validate_catalog
 load_catalog
 
 printf '\n%s\n' "=== ${SCRIPT_NAME} ==="
