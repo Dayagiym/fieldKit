@@ -15,6 +15,7 @@ readonly LOG_DIR="${HOME}/.local/state/fieldkit"
 readonly LOG_FILE="${LOG_DIR}/install.log"
 readonly WIFIMAN_DOWNLOAD_URL="https://desktop.wifiman.com/wifiman-desktop-1.1.3-amd64.deb"
 readonly DRAWIO_RELEASE_API="https://api.github.com/repos/jgraph/drawio-desktop/releases/latest"
+readonly NEXTCLOUD_RELEASE_URL="https://download.nextcloud.com/desktop/releases/Linux/"
 
 DRY_RUN=false
 mkdir -p "${LOG_DIR}"
@@ -170,6 +171,33 @@ install_external_package() {
             log "Installing draw.io Desktop."
             sudo apt-get install "${deb_file}"
             rm -rf -- "${temp_dir}"
+            ;;
+        nextcloud)
+            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "Nextcloud Desktop AppImage currently requires an amd64/x86_64 system."
+            command -v curl >/dev/null 2>&1 || { log "curl is required to download Nextcloud Client; installing curl first."; sudo apt-get install -y curl; }
+            local temp_dir nextcloud_url appimage_path desktop_dir
+            temp_dir="$(mktemp -d)"
+            nextcloud_url="$(curl -fsSL "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
+            [[ -n "${nextcloud_url}" ]] || fail "Unable to locate the latest official Nextcloud x86_64 AppImage."
+            appimage_path="${HOME}/.local/bin/nextcloud"
+            desktop_dir="${HOME}/.local/share/applications"
+            mkdir -p "${HOME}/.local/bin" "${desktop_dir}"
+            log "Downloading the official Nextcloud Desktop Client AppImage: ${nextcloud_url}"
+            curl -fL --retry 3 --retry-delay 2 "${NEXTCLOUD_RELEASE_URL}${nextcloud_url}" -o "${temp_dir}/nextcloud.AppImage"
+            install -m 0755 "${temp_dir}/nextcloud.AppImage" "${appimage_path}"
+            cat > "${desktop_dir}/nextcloud.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Nextcloud Desktop Client
+Comment=Synchronize files with a Nextcloud server
+Exec=${appimage_path}
+Icon=nextcloud
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=true
+EOF
+            rm -rf -- "${temp_dir}"
+            log "Nextcloud Desktop Client installed at ${appimage_path}."
             ;;
         *) fail "No external installer is defined for package '${package}'." ;;
     esac
