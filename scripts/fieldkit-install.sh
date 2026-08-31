@@ -36,8 +36,8 @@ usage() {
     cat <<'EOF'
 Usage: fieldkit-install.sh [--dry-run]
 
-  --dry-run    Show package choices and planned changes without modifying the system.
-  -h, --help   Show this help.
+  --dry-run     Show package choices and planned changes without modifying the system.
+  -h, --help    Show this help.
 EOF
 }
 
@@ -59,7 +59,6 @@ require_command lsb_release
 require_command apt-get
 require_command apt-cache
 require_command dpkg-query
-require_command curl
 
 [[ -f "${CONFIG_FILE}" ]] || fail "Package catalog not found: ${CONFIG_FILE}"
 
@@ -89,12 +88,11 @@ setup_tailscale_repository() {
     fi
 
     if [[ "${DRY_RUN}" == true ]]; then
-        log "DRY RUN: Tailscale is cataloged as an external package and will be installable in a real run."
+        log "DRY RUN: Tailscale is cataloged as an external package and will be available in a real run."
         return 0
     fi
 
-    local ubuntu_codename
-    ubuntu_codename="${UBUNTU_CODENAME:-}"
+    local ubuntu_codename="${UBUNTU_CODENAME:-}"
     if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then
         # shellcheck disable=SC1091
         . /etc/os-release
@@ -105,18 +103,16 @@ setup_tailscale_repository() {
 
     case "${ubuntu_codename}" in
         noble|jammy|focal|bionic|xenial) ;;
-        *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository."
-           ;;
+        *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;;
     esac
 
+    require_command curl
     log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
     sudo mkdir -p --mode=0755 /usr/share/keyrings
     curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" \
         | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
     curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" \
         | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
-
-    sudo apt-get update
 }
 
 is_available() {
@@ -156,6 +152,7 @@ load_catalog() {
     INSTALL_NAMES=()
     INSTALL_RECS=()
     INSTALL_REASONS=()
+    INSTALL_STATES=()
 
     while IFS='|' read -r action package name recommendation reason; do
         [[ -z "${action}" || "${action}" == \#* ]] && continue
@@ -170,11 +167,16 @@ load_catalog() {
                 fi
                 ;;
             install)
-                if ! is_installed "${package}" && is_available "${package}"; then
-                    INSTALL_PACKAGES+=("${package}")
-                    INSTALL_NAMES+=("${name}")
-                    INSTALL_RECS+=("${recommendation}")
-                    INSTALL_REASONS+=("${reason}")
+                INSTALL_PACKAGES+=("${package}")
+                INSTALL_NAMES+=("${name}")
+                INSTALL_RECS+=("${recommendation}")
+                INSTALL_REASONS+=("${reason}")
+                if is_installed "${package}"; then
+                    INSTALL_STATES+=("INSTALLED")
+                elif is_available "${package}"; then
+                    INSTALL_STATES+=("AVAILABLE")
+                else
+                    INSTALL_STATES+=("UNAVAILABLE")
                 fi
                 ;;
             *)
@@ -200,6 +202,7 @@ choose_packages() {
     local -n names="$3"
     local -n recommendations="$4"
     local -n reasons="$5"
+    local -n states="$6"
     local -a selected=()
     local prompt answer item
 
@@ -213,13 +216,18 @@ choose_packages() {
     if [[ "${action}" == "remove" ]]; then
         printf '%s\n' "FieldKit — Applications detected for possible removal"
     else
-        printf '%s\n' "FieldKit — Recommended field applications"
+        printf '%s\n' "FieldKit — Field applications"
     fi
     printf '%s\n\n' '------------------------------------------------------------'
 
     for item in "${!packages[@]}"; do
-        printf '  [%2d] %-20s %-12s %s\n' \
-            "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"
+        if [[ "${action}" == "remove" ]]; then
+            printf '  [%2d] %-20s %-12s %s\n' \
+                "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"
+        else
+            printf '  [%2d] %-20s %-12s %-11s %s\n' \
+                "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"
+        fi
         printf '       %s\n' "${reasons[item]}"
     done
 
@@ -241,12 +249,18 @@ choose_packages() {
                 ;;
             a|all)
                 for item in "${!packages[@]}"; do
-                    selected+=("${item}")
+                    if [[ "${action}" == "remove" || "${states[item]}" == "AVAILABLE" ]]; then
+                        selected+=("${item}")
+                    fi
                 done
                 ;;
             r|recommended)
                 for item in "${!packages[@]}"; do
-                    [[ "${recommendations[item]}" == "RECOMMENDED" || "${recommendations[item]}" == "REMOVE" ]] && selected+=("${item}")
+                    if [[ "${action}" == "remove" ]]; then
+                        [[ "${recommendations[item]}" == "REMOVE" ]] && selected+=("${item}")
+                    else
+                        [[ "${recommendations[item]}" == "RECOMMENDED" && "${states[item]}" == "AVAILABLE" ]] && selected+=("${item}")
+                    fi
                 done
                 ;;
             *)
@@ -255,6 +269,11 @@ choose_packages() {
                     [[ "${item}" =~ ^[0-9]+$ ]] || { valid=false; break; }
                     item=$((item - 1))
                     (( item >= 0 && item < ${#packages[@]} )) || { valid=false; break; }
+                    if [[ "${action}" == "install" && "${states[item]}" != "AVAILABLE" ]]; then
+                        printf 'Package %s is not available for installation (%s).\n' "${names[item]}" "${states[item]}"
+                        valid=false
+                        break
+                    fi
                     contains_number "${item}" "${selected[@]}" || selected+=("${item}")
                 done
                 ${valid} || { printf 'Invalid selection. Please try again.\n'; continue; }
@@ -267,7 +286,11 @@ choose_packages() {
 
     printf '\nSelected packages:\n'
     for item in "${selected[@]}"; do
-        printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"
+        if [[ "${action}" == "install" ]]; then
+            printf '  - %s (%s) [%s]\n' "${names[item]}" "${packages[item]}" "${states[item]}"
+        else
+            printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"
+        fi
     done
 
     printf '\n'
@@ -307,10 +330,10 @@ printf 'Validated target: Linux Mint %s MATE\n' "${mint_release}"
 [[ "${DRY_RUN}" == true ]] && printf '%s\n' 'Mode: DRY RUN'
 printf '\n'
 
-choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS
+choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS REMOVE_STATES
 
 load_catalog
-choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS
+choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS INSTALL_STATES
 
 log "FieldKit installer completed."
 log "Review ${LOG_FILE} for the operation history."
