@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: fieldkit-install.sh [--dry-run]
 
-  --dry-run    Show the package choices without changing the system.
+  --dry-run    Show package choices and planned changes without modifying the system.
   -h, --help   Show this help.
 EOF
 }
@@ -59,6 +59,7 @@ require_command lsb_release
 require_command apt-get
 require_command apt-cache
 require_command dpkg-query
+require_command curl
 
 [[ -f "${CONFIG_FILE}" ]] || fail "Package catalog not found: ${CONFIG_FILE}"
 
@@ -80,6 +81,42 @@ log "Validated Linux Mint ${mint_release}."
 is_installed() {
     local package="$1"
     [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" == "install ok installed" ]]
+}
+
+setup_tailscale_repository() {
+    if is_installed tailscale || apt-cache show tailscale >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == true ]]; then
+        log "DRY RUN: Tailscale is cataloged as an external package and will be installable in a real run."
+        return 0
+    fi
+
+    local ubuntu_codename
+    ubuntu_codename="${UBUNTU_CODENAME:-}"
+    if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        ubuntu_codename="${UBUNTU_CODENAME:-}"
+    fi
+
+    [[ -n "${ubuntu_codename}" ]] || fail "Unable to determine the Ubuntu base codename required for the Tailscale repository."
+
+    case "${ubuntu_codename}" in
+        noble|jammy|focal|bionic|xenial) ;;
+        *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository."
+           ;;
+    esac
+
+    log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
+    sudo mkdir -p --mode=0755 /usr/share/keyrings
+    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" \
+        | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" \
+        | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+
+    sudo apt-get update
 }
 
 is_available() {
@@ -248,6 +285,10 @@ choose_packages() {
     done
 
     if [[ "${action}" == "remove" ]]; then
+        log "Previewing removal of selected packages: ${selected_packages[*]}"
+        sudo apt-get -s remove --purge "${selected_packages[@]}"
+        read -r -p "Removal preview completed. Execute the removal? [y/N] " answer
+        [[ "${answer}" =~ ^[Yy]$ ]] || { log "Removal cancelled after preview."; return 0; }
         log "Removing selected packages: ${selected_packages[*]}"
         sudo apt-get remove --purge "${selected_packages[@]}"
     else
@@ -257,6 +298,8 @@ choose_packages() {
 }
 
 validate_catalog
+setup_tailscale_repository
+sudo apt-get update
 load_catalog
 
 printf '\n%s\n' "=== ${SCRIPT_NAME} ==="
@@ -266,12 +309,7 @@ printf '\n'
 
 choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS
 
-if [[ "${#INSTALL_PACKAGES[@]}" -gt 0 && "${DRY_RUN}" == false ]]; then
-    printf '\nRefreshing APT package information before installation choices...\n'
-    sudo apt-get update
-    load_catalog
-fi
-
+load_catalog
 choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS
 
 log "FieldKit installer completed."
