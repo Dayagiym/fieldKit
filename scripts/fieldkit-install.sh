@@ -186,7 +186,7 @@ choose_packages() {
     if [[ "${#packages[@]}" -eq 0 ]]; then log "No matching ${action} candidates were found on this system."; printf '\n'; return 0; fi
     printf '\n'; [[ "${action}" == remove ]] && printf '%s\n' "FieldKit — Applications detected for possible removal" || printf '%s\n' "FieldKit — Field applications"; printf '%s\n\n' '------------------------------------------------------------'
     for item in "${!packages[@]}"; do
-        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}" "${states[item]}" "${packages[item]}"; fi
+        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"; fi
         printf '       %s\n' "${reasons[item]}"
     done
     printf '\nEnter numbers separated by spaces/commas, or: r=recommended, a=all, n=none\n'; [[ "${action}" == remove ]] && prompt=Remove || prompt=Install
