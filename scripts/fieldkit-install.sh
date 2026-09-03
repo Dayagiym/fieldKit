@@ -117,7 +117,7 @@ load_catalog() {
                 elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
                 else INSTALL_STATES+=("UNAVAILABLE"); fi
                 ;;
-            *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;
+            *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;;
         esac
     done < "${CONFIG_FILE}"
 }
@@ -139,6 +139,18 @@ contains_number() {
     local needle="$1"; shift; local value
     for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done
     return 1
+}
+
+dry_run_external_package() {
+    local package="$1"
+    case "${package}" in
+        tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;;
+        wifiman) log "DRY RUN: would download and install the official Ubiquiti WiFiman Desktop AMD64 package." ;;
+        drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;;
+        nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;;
+        chirp) log "DRY RUN: would install CHIRP dependencies, download the latest official CHIRP-next wheel, and install it with pipx." ;;
+        *) fail "No external installer is defined for package '${package}'." ;;
+    esac
 }
 
 install_external_package() {
@@ -165,7 +177,7 @@ install_external_package() {
             local temp_dir drawio_url deb_file
             temp_dir="$(mktemp -d)"; deb_file="${temp_dir}/drawio-amd64.deb"
             log "Resolving the latest official draw.io Desktop Linux package."
-            drawio_url="$(curl -fsSL -H 'Accept: application/vnd.github+json' "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^"]*draw\.io-amd64-[^"]*\.deb\)".*/\1/p' | head -n 1)"
+            drawio_url="$(curl -fsSL -H 'Accept: application/vnd.github+json' "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
             [[ -n "${drawio_url}" ]] || fail "Unable to locate the latest official draw.io AMD64 .deb."
             log "Downloading the official draw.io Desktop Linux package."
             curl -fL --retry 3 --retry-delay 2 "${drawio_url}" -o "${deb_file}"
@@ -178,7 +190,7 @@ install_external_package() {
             command -v curl >/dev/null 2>&1 || { log "curl is required to download Nextcloud Client; installing curl first."; sudo apt-get install -y curl; }
             local temp_dir nextcloud_url appimage_path desktop_dir
             temp_dir="$(mktemp -d)"
-            nextcloud_url="$(curl -fsSL "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
+            nextcloud_url="$(curl -fsSL "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^\"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${nextcloud_url}" ]] || fail "Unable to locate the latest official Nextcloud x86_64 AppImage."
             appimage_path="${HOME}/.local/bin/nextcloud"
             desktop_dir="${HOME}/.local/share/applications"
@@ -275,7 +287,23 @@ choose_packages() {
         if [[ "${action}" == "install" ]]; then printf '  - %s (%s) [%s]\n' "${names[item]}" "${packages[item]}" "${states[item]}"; else printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"; fi
     done
     printf '\n'
-    if [[ "${DRY_RUN}" == true ]]; then printf 'DRY RUN: no packages will be changed.\n'; return 0; fi
+    if [[ "${DRY_RUN}" == true ]]; then
+        if [[ "${action}" == "install" ]]; then
+            for item in "${selected[@]}"; do
+                if [[ "${sources[item]}" == external:* ]]; then
+                    dry_run_external_package "${packages[item]}"
+                else
+                    log "DRY RUN: would install APT package ${packages[item]}."
+                fi
+            done
+        else
+            for item in "${selected[@]}"; do
+                log "DRY RUN: would remove ${packages[item]} (purge)."
+            done
+        fi
+        printf 'DRY RUN: no packages will be changed.\n'
+        return 0
+    fi
     read -r -p "Proceed with this ${action} operation? [y/N] " answer
     [[ "${answer}" =~ ^[Yy]$ ]] || { log "${action^} operation cancelled by user."; return 0; }
     local -a selected_packages=()
