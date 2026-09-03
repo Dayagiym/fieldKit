@@ -76,8 +76,7 @@ load_catalog() {
             remove) if is_installed "${package}"; then REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED"); fi ;;
             install)
                 INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
-                if is_installed "${package}"; then
-                    INSTALL_STATES+=("INSTALLED")
+                if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED")
                 elif [[ "${source}" == external:* ]]; then
                     if [[ "${package}" == "wifiman" && "$(ubuntu_codename)" == "noble" ]]; then INSTALL_STATES+=("UNSUPPORTED"); else INSTALL_STATES+=("EXTERNAL"); fi
                 elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
@@ -87,6 +86,7 @@ load_catalog() {
         esac
     done < "${CONFIG_FILE}"
 }
+
 validate_catalog() {
     local line_number=0 line action package name recommendation reason source extra
     while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -98,9 +98,19 @@ validate_catalog() {
         [[ "${package}" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || fail "Invalid package name '${package}' at ${CONFIG_FILE}:${line_number}"
     done < "${CONFIG_FILE}"
 }
+
 contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
-dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies, locate the latest official CHIRP-next wheel, and install it with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
+dry_run_external_package() {
+    case "$1" in
+        tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;;
+        wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;;
+        drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;;
+        nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;;
+        chirp) log "DRY RUN: would install CHIRP dependencies, locate the latest official CHIRP-next wheel, and install it with pipx." ;;
+        *) fail "No external installer is defined for package '$1'." ;;
+    esac
+}
 require_amd64() { [[ "$(dpkg --print-architecture)" == amd64 ]] || fail "$1 currently requires an amd64/x86_64 system."; }
 
 require_downloaded_file() {
@@ -114,6 +124,12 @@ curl_download() {
     local url="$1" output="$2" description="$3"
     log "Downloading ${description}."
     curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -o "${output}" -- "${url}"
+}
+
+chirp_wheel_for_date() {
+    local candidate_date="$1" candidate_url="${CHIRP_RELEASE_BASE_URL}next-${candidate_date}/chirp-${candidate_date}-py3-none-any.whl" http_code
+    http_code="$(curl -sS -L -o /dev/null -w '%{http_code}' --retry 1 --connect-timeout 10 --max-time 20 -A 'Mozilla/5.0' -H 'Range: bytes=0-0' -- "${candidate_url}" 2>/dev/null || true)"
+    [[ "${http_code}" == "200" || "${http_code}" == "206" || "${http_code}" == "301" || "${http_code}" == "302" ]]
 }
 
 install_external_package() {
@@ -163,30 +179,25 @@ EOF
             ;;
         chirp)
             require_amd64 "CHIRP"; require_command curl
-            if ! command -v pipx >/dev/null 2>&1; then log "pipx is required for CHIRP; installing it first."; install_apt_packages install pipx; fi
             install_apt_packages install python3-wxgtk4.0 python3-yattag pipx
-            local temp_dir chirp_release_dir chirp_url wheel_file chirp_index chirp_candidate offset candidate_date candidate_dir candidate_wheel
+            local temp_dir chirp_release_dir chirp_url wheel_file chirp_index candidate_date offset
             temp_dir="$(new_temp_dir)"
             chirp_release_dir="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}" 2>/dev/null | grep -oE 'next-[0-9]{8}/' | sed 's:/$::' | sort -V | tail -n 1 || true)"
-            if [[ -z "${chirp_release_dir}" ]]; then
-                log "CHIRP archive index did not expose its directory listing; probing recent dated CHIRP-next builds."
-                for offset in $(seq 0 30); do
+            if [[ -n "${chirp_release_dir}" ]]; then
+                chirp_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" 2>/dev/null | grep -oE 'chirp-[0-9]{8}-py3-none-any\.whl' | sort -V | tail -n 1 || true)"
+            fi
+            if [[ -z "${chirp_url}" ]]; then
+                log "CHIRP archive index did not expose its wheel listing; probing direct official dated wheel URLs."
+                for offset in $(seq 0 21); do
                     candidate_date="$(date -d "-${offset} days" '+%Y%m%d')"
-                    candidate_dir="next-${candidate_date}"
-                    candidate_wheel="$(curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}${candidate_dir}/" 2>/dev/null | grep -oE 'chirp-[0-9]{8}-py3-none-any\.whl' | sort -V | tail -n 1 || true)"
-                    if [[ -n "${candidate_wheel}" ]]; then
-                        chirp_release_dir="${candidate_dir}"
-                        chirp_url="${candidate_wheel}"
+                    if chirp_wheel_for_date "${candidate_date}"; then
+                        chirp_release_dir="next-${candidate_date}"
+                        chirp_url="chirp-${candidate_date}-py3-none-any.whl"
                         break
                     fi
                 done
             fi
-            [[ -n "${chirp_release_dir}" ]] || fail "Unable to locate the latest official CHIRP-next build."
-            if [[ -z "${chirp_url:-}" ]]; then
-                chirp_index="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" 2>/dev/null || true)"
-                chirp_url="$(printf '%s\n' "${chirp_index}" | grep -oE 'chirp-[0-9]{8}-py3-none-any\.whl' | sort -V | tail -n 1)"
-            fi
-            [[ -n "${chirp_url}" ]] || fail "Unable to locate the latest official CHIRP Python wheel."
+            [[ -n "${chirp_release_dir:-}" && -n "${chirp_url:-}" ]] || fail "Unable to locate the latest official CHIRP-next build."
             wheel_file="${temp_dir}/${chirp_url}"
             curl_download "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" "${wheel_file}" "the latest official CHIRP-next Python wheel"
             require_downloaded_file "${wheel_file}" "CHIRP-next"
