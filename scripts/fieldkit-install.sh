@@ -16,6 +16,7 @@ readonly LOG_FILE="${LOG_DIR}/install.log"
 readonly WIFIMAN_DOWNLOAD_URL="https://desktop.wifiman.com/wifiman-desktop-1.1.3-amd64.deb"
 readonly DRAWIO_RELEASE_API="https://api.github.com/repos/jgraph/drawio-desktop/releases/latest"
 readonly NEXTCLOUD_RELEASE_URL="https://download.nextcloud.com/desktop/releases/Linux/"
+readonly CHIRP_RELEASE_BASE_URL="https://archive.chirpmyradio.com/chirp_next/"
 
 DRY_RUN=false
 mkdir -p "${LOG_DIR}"
@@ -116,7 +117,7 @@ load_catalog() {
                 elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
                 else INSTALL_STATES+=("UNAVAILABLE"); fi
                 ;;
-            *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;;
+            *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;
         esac
     done < "${CONFIG_FILE}"
 }
@@ -199,6 +200,29 @@ EOF
             rm -rf -- "${temp_dir}"
             log "Nextcloud Desktop Client installed at ${appimage_path}."
             ;;
+        chirp)
+            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "CHIRP currently requires an amd64/x86_64 system."
+            command -v curl >/dev/null 2>&1 || { log "curl is required to download CHIRP; installing curl first."; sudo apt-get install -y curl; }
+            command -v pipx >/dev/null 2>&1 || { log "pipx is required for CHIRP; installing it first."; sudo apt-get install -y pipx; }
+            sudo apt-get install -y python3-wxgtk4.0 python3-yattag pipx
+            local temp_dir chirp_release_dir chirp_url wheel_file
+            temp_dir="$(mktemp -d)"
+            chirp_release_dir="$(curl -fsSL "${CHIRP_RELEASE_BASE_URL}" | sed -n 's/.*href="\(next-[0-9][0-9]*\)\/".*/\1/p' | sort -V | tail -n 1)"
+            [[ -n "${chirp_release_dir}" ]] || fail "Unable to locate the latest official CHIRP-next build."
+            chirp_url="$(curl -fsSL "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" | sed -n 's/.*href="\(chirp-[0-9][0-9]*-py3-none-any\.whl\)".*/\1/p' | sort -V | tail -n 1)"
+            [[ -n "${chirp_url}" ]] || fail "Unable to locate the latest official CHIRP Python wheel."
+            wheel_file="${temp_dir}/${chirp_url}"
+            log "Downloading the latest official CHIRP-next Python wheel: ${chirp_url}"
+            curl -fL --retry 3 --retry-delay 2 "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" -o "${wheel_file}"
+            if pipx list 2>/dev/null | grep -qE 'package chirp '; then
+                log "Removing the existing pipx-managed CHIRP installation before upgrade."
+                pipx uninstall chirp
+            fi
+            log "Installing CHIRP-next for the current user."
+            pipx install --system-site-packages "${wheel_file}"
+            rm -rf -- "${temp_dir}"
+            log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
+            ;;
         *) fail "No external installer is defined for package '${package}'." ;;
     esac
 }
@@ -278,16 +302,7 @@ for item in "${!INSTALL_PACKAGES[@]}"; do
     if [[ "${INSTALL_SOURCES[item]}" == "external:tailscale" ]]; then setup_tailscale_repository; break; fi
 done
 
-# Refresh APT metadata for availability detection. This is the only APT action in a dry run.
-sudo apt-get update
-load_catalog
-
-printf '\n%s\n' "=== ${SCRIPT_NAME} ==="
-printf 'Validated target: Linux Mint %s MATE\n' "${mint_release}"
-[[ "${DRY_RUN}" == true ]] && printf '%s\n' 'Mode: DRY RUN'
-printf '\n'
 choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS REMOVE_SOURCES REMOVE_STATES
-load_catalog
 choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS INSTALL_SOURCES INSTALL_STATES
-log "FieldKit installer completed."
-log "Review ${LOG_FILE} for the operation history."
+
+log "FieldKit installer completed. Review ${LOG_FILE}."
