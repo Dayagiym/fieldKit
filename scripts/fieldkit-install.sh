@@ -19,11 +19,27 @@ readonly NEXTCLOUD_RELEASE_URL="https://download.nextcloud.com/desktop/releases/
 readonly CHIRP_RELEASE_BASE_URL="https://archive.chirpmyradio.com/chirp_next/"
 
 DRY_RUN=false
+TEMP_DIRS=()
 mkdir -p "${LOG_DIR}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "${LOG_FILE}"; }
 fail() { log "ERROR: $*"; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"; }
+
+cleanup_temp_dirs() {
+    local dir
+    for dir in "${TEMP_DIRS[@]}"; do
+        [[ -n "${dir}" && -d "${dir}" ]] && rm -rf -- "${dir}"
+    done
+}
+trap cleanup_temp_dirs EXIT
+
+new_temp_dir() {
+    local dir
+    dir="$(mktemp -d)" || fail "Unable to create a temporary directory."
+    TEMP_DIRS+=("${dir}")
+    printf '%s\n' "${dir}"
+}
 
 usage() {
     cat <<'EOF'
@@ -72,6 +88,17 @@ apt_package_available() {
     apt-cache show "${package}" >/dev/null 2>&1
 }
 
+install_apt_packages() {
+    local operation="$1"; shift
+    local -a packages=("$@")
+    [[ "${#packages[@]}" -gt 0 ]] || return 0
+    if [[ "${operation}" == "install" ]]; then
+        sudo apt-get install -y -- "${packages[@]}"
+    else
+        sudo apt-get remove --purge -y -- "${packages[@]}"
+    fi
+}
+
 setup_tailscale_repository() {
     if is_installed tailscale || apt_package_available tailscale; then return 0; fi
     if [[ "${DRY_RUN}" == true ]]; then
@@ -80,7 +107,7 @@ setup_tailscale_repository() {
     fi
     if ! command -v curl >/dev/null 2>&1; then
         log "curl is required to configure Tailscale; installing curl first."
-        sudo apt-get install -y curl
+        install_apt_packages install curl
     fi
     local ubuntu_codename="${UBUNTU_CODENAME:-}"
     if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then
@@ -95,19 +122,20 @@ setup_tailscale_repository() {
     esac
     log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
     sudo mkdir -p --mode=0755 /usr/share/keyrings
-    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+    curl -fsSL --retry 3 --retry-delay 2 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+    curl -fsSL --retry 3 --retry-delay 2 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+    sudo apt-get update -y
 }
 
 load_catalog() {
-    REMOVE_PACKAGES=(); REMOVE_NAMES=(); REMOVE_RECS=(); REMOVE_REASONS=(); REMOVE_SOURCES=()
+    REMOVE_PACKAGES=(); REMOVE_NAMES=(); REMOVE_RECS=(); REMOVE_REASONS=(); REMOVE_SOURCES=(); REMOVE_STATES=()
     INSTALL_PACKAGES=(); INSTALL_NAMES=(); INSTALL_RECS=(); INSTALL_REASONS=(); INSTALL_SOURCES=(); INSTALL_STATES=()
     while IFS='|' read -r action package name recommendation reason source; do
         [[ -z "${action}" || "${action}" == \#* ]] && continue
         case "${action}" in
             remove)
                 if is_installed "${package}"; then
-                    REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}")
+                    REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED")
                 fi
                 ;;
             install)
@@ -153,51 +181,63 @@ dry_run_external_package() {
     esac
 }
 
+require_amd64() {
+    [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "$1 currently requires an amd64/x86_64 system."
+}
+
+require_downloaded_file() {
+    local file="$1" description="$2"
+    [[ -s "${file}" ]] || fail "${description} download is empty or missing."
+    file "${file}" | grep -qiE 'Debian binary package|ELF|Zip archive|Python wheel|POSIX shell script|application' || log "WARNING: downloaded ${description} has an unexpected file type; continuing to installer validation."
+}
+
 install_external_package() {
     local package="$1"
     case "${package}" in
         tailscale)
             log "Installing Tailscale from its configured official APT repository."
-            sudo apt-get install tailscale
+            install_apt_packages install tailscale
             ;;
         wifiman)
-            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "WiFiman Desktop currently requires an amd64/x86_64 system."
-            command -v curl >/dev/null 2>&1 || { log "curl is required to download WiFiman; installing curl first."; sudo apt-get install -y curl; }
+            require_amd64 "WiFiman Desktop"
+            require_command curl
             local temp_dir deb_file
-            temp_dir="$(mktemp -d)"; deb_file="${temp_dir}/wifiman-desktop.deb"
+            temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/wifiman-desktop.deb"
             log "Downloading the official Ubiquiti WiFiman Desktop Linux package."
-            curl -fL --retry 3 --retry-delay 2 "${WIFIMAN_DOWNLOAD_URL}" -o "${deb_file}"
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${WIFIMAN_DOWNLOAD_URL}" -o "${deb_file}"
+            require_downloaded_file "${deb_file}" "WiFiman Desktop"
             log "Installing WiFiman Desktop."
-            sudo apt-get install "${deb_file}"
-            rm -rf -- "${temp_dir}"
+            sudo apt-get install -y -- "${deb_file}"
             ;;
         drawio)
-            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "draw.io Desktop currently requires an amd64/x86_64 system."
-            command -v curl >/dev/null 2>&1 || { log "curl is required to download draw.io; installing curl first."; sudo apt-get install -y curl; }
+            require_amd64 "draw.io Desktop"
+            require_command curl
             local temp_dir drawio_url deb_file
-            temp_dir="$(mktemp -d)"; deb_file="${temp_dir}/drawio-amd64.deb"
+            temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/drawio-amd64.deb"
             log "Resolving the latest official draw.io Desktop Linux package."
-            drawio_url="$(curl -fsSL -H 'Accept: application/vnd.github+json' "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
+            drawio_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 -H 'Accept: application/vnd.github+json' "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
             [[ -n "${drawio_url}" ]] || fail "Unable to locate the latest official draw.io AMD64 .deb."
             log "Downloading the official draw.io Desktop Linux package."
-            curl -fL --retry 3 --retry-delay 2 "${drawio_url}" -o "${deb_file}"
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${drawio_url}" -o "${deb_file}"
+            require_downloaded_file "${deb_file}" "draw.io Desktop"
             log "Installing draw.io Desktop."
-            sudo apt-get install "${deb_file}"
-            rm -rf -- "${temp_dir}"
+            sudo apt-get install -y -- "${deb_file}"
             ;;
         nextcloud)
-            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "Nextcloud Desktop AppImage currently requires an amd64/x86_64 system."
-            command -v curl >/dev/null 2>&1 || { log "curl is required to download Nextcloud Client; installing curl first."; sudo apt-get install -y curl; }
-            local temp_dir nextcloud_url appimage_path desktop_dir
-            temp_dir="$(mktemp -d)"
-            nextcloud_url="$(curl -fsSL "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^\"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
+            require_amd64 "Nextcloud Desktop AppImage"
+            require_command curl
+            local temp_dir nextcloud_url appimage_path desktop_dir appimage_file
+            temp_dir="$(new_temp_dir)"
+            nextcloud_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^\"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${nextcloud_url}" ]] || fail "Unable to locate the latest official Nextcloud x86_64 AppImage."
             appimage_path="${HOME}/.local/bin/nextcloud"
             desktop_dir="${HOME}/.local/share/applications"
+            appimage_file="${temp_dir}/nextcloud.AppImage"
             mkdir -p "${HOME}/.local/bin" "${desktop_dir}"
             log "Downloading the official Nextcloud Desktop Client AppImage: ${nextcloud_url}"
-            curl -fL --retry 3 --retry-delay 2 "${NEXTCLOUD_RELEASE_URL}${nextcloud_url}" -o "${temp_dir}/nextcloud.AppImage"
-            install -m 0755 "${temp_dir}/nextcloud.AppImage" "${appimage_path}"
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${NEXTCLOUD_RELEASE_URL}${nextcloud_url}" -o "${appimage_file}"
+            require_downloaded_file "${appimage_file}" "Nextcloud Desktop Client"
+            install -m 0755 "${appimage_file}" "${appimage_path}"
             cat > "${desktop_dir}/nextcloud.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -209,30 +249,32 @@ Terminal=false
 Categories=Network;FileTransfer;
 StartupNotify=true
 EOF
-            rm -rf -- "${temp_dir}"
             log "Nextcloud Desktop Client installed at ${appimage_path}."
             ;;
         chirp)
-            [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "CHIRP currently requires an amd64/x86_64 system."
-            command -v curl >/dev/null 2>&1 || { log "curl is required to download CHIRP; installing curl first."; sudo apt-get install -y curl; }
-            command -v pipx >/dev/null 2>&1 || { log "pipx is required for CHIRP; installing it first."; sudo apt-get install -y pipx; }
-            sudo apt-get install -y python3-wxgtk4.0 python3-yattag pipx
+            require_amd64 "CHIRP"
+            require_command curl
+            if ! command -v pipx >/dev/null 2>&1; then
+                log "pipx is required for CHIRP; installing it first."
+                install_apt_packages install pipx
+            fi
+            install_apt_packages install python3-wxgtk4.0 python3-yattag pipx
             local temp_dir chirp_release_dir chirp_url wheel_file
-            temp_dir="$(mktemp -d)"
-            chirp_release_dir="$(curl -fsSL "${CHIRP_RELEASE_BASE_URL}" | sed -n 's/.*href="\(next-[0-9][0-9]*\)\/".*/\1/p' | sort -V | tail -n 1)"
+            temp_dir="$(new_temp_dir)"
+            chirp_release_dir="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${CHIRP_RELEASE_BASE_URL}" | sed -n 's/.*href="\(next-[0-9][0-9]*\)\/".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${chirp_release_dir}" ]] || fail "Unable to locate the latest official CHIRP-next build."
-            chirp_url="$(curl -fsSL "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" | sed -n 's/.*href="\(chirp-[0-9][0-9]*-py3-none-any\.whl\)".*/\1/p' | sort -V | tail -n 1)"
+            chirp_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" | sed -n 's/.*href="\(chirp-[0-9][0-9]*-py3-none-any\.whl\)".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${chirp_url}" ]] || fail "Unable to locate the latest official CHIRP Python wheel."
             wheel_file="${temp_dir}/${chirp_url}"
             log "Downloading the latest official CHIRP-next Python wheel: ${chirp_url}"
-            curl -fL --retry 3 --retry-delay 2 "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" -o "${wheel_file}"
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" -o "${wheel_file}"
+            require_downloaded_file "${wheel_file}" "CHIRP-next"
             if pipx list 2>/dev/null | grep -qE 'package chirp '; then
-                log "Removing the existing pipx-managed CHIRP installation before upgrade."
+                log "Updating the existing pipx-managed CHIRP installation."
                 pipx uninstall chirp
             fi
             log "Installing CHIRP-next for the current user."
             pipx install --system-site-packages "${wheel_file}"
-            rm -rf -- "${temp_dir}"
             log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
             ;;
         *) fail "No external installer is defined for package '${package}'." ;;
@@ -290,16 +332,10 @@ choose_packages() {
     if [[ "${DRY_RUN}" == true ]]; then
         if [[ "${action}" == "install" ]]; then
             for item in "${selected[@]}"; do
-                if [[ "${sources[item]}" == external:* ]]; then
-                    dry_run_external_package "${packages[item]}"
-                else
-                    log "DRY RUN: would install APT package ${packages[item]}."
-                fi
+                if [[ "${sources[item]}" == external:* ]]; then dry_run_external_package "${packages[item]}"; else log "DRY RUN: would install APT package ${packages[item]}."; fi
             done
         else
-            for item in "${selected[@]}"; do
-                log "DRY RUN: would remove ${packages[item]} (purge)."
-            done
+            for item in "${selected[@]}"; do log "DRY RUN: would remove ${packages[item]} (purge)."; done
         fi
         printf 'DRY RUN: no packages will be changed.\n'
         return 0
@@ -310,16 +346,16 @@ choose_packages() {
     for item in "${selected[@]}"; do selected_packages+=("${packages[item]}"); done
     if [[ "${action}" == "remove" ]]; then
         log "Previewing removal of selected packages: ${selected_packages[*]}"
-        sudo apt-get -s remove --purge "${selected_packages[@]}"
+        sudo apt-get -s remove --purge -- "${selected_packages[@]}"
         read -r -p "Removal preview completed. Execute the removal? [y/N] " answer
         [[ "${answer}" =~ ^[Yy]$ ]] || { log "Removal cancelled after preview."; return 0; }
         log "Removing selected packages: ${selected_packages[*]}"
-        sudo apt-get remove --purge "${selected_packages[@]}"
+        install_apt_packages remove "${selected_packages[@]}"
     else
         local index package source
         for index in "${selected[@]}"; do
             package="${packages[index]}"; source="${sources[index]}"
-            if [[ "${source}" == external:* ]]; then install_external_package "${package}"; else log "Installing selected APT package: ${package}"; sudo apt-get install "${package}"; fi
+            if [[ "${source}" == external:* ]]; then install_external_package "${package}"; else log "Installing selected APT package: ${package}"; install_apt_packages install "${package}"; fi
         done
     fi
 }
