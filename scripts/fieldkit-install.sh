@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-#
 # Mint FieldKit installer
-#
 # Interactive package selection for Linux Mint 22.3 MATE.
-# Package recommendations live in config/packages.conf so the catalog can grow
-# without turning this installer into a hard-coded package list.
-#
 set -Eeuo pipefail
 
 readonly SCRIPT_NAME="Mint FieldKit"
@@ -25,106 +20,46 @@ mkdir -p "${LOG_DIR}"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "${LOG_FILE}"; }
 fail() { log "ERROR: $*"; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"; }
-
-cleanup_temp_dirs() {
-    local dir
-    for dir in "${TEMP_DIRS[@]}"; do
-        [[ -n "${dir}" && -d "${dir}" ]] && rm -rf -- "${dir}"
-    done
-}
+cleanup_temp_dirs() { local dir; for dir in "${TEMP_DIRS[@]}"; do [[ -n "${dir}" && -d "${dir}" ]] && rm -rf -- "${dir}"; done; }
 trap cleanup_temp_dirs EXIT
+new_temp_dir() { local dir; dir="$(mktemp -d)" || fail "Unable to create a temporary directory."; TEMP_DIRS+=("${dir}"); printf '%s\n' "${dir}"; }
 
-new_temp_dir() {
-    local dir
-    dir="$(mktemp -d)" || fail "Unable to create a temporary directory."
-    TEMP_DIRS+=("${dir}")
-    printf '%s\n' "${dir}"
-}
-
-usage() {
-    cat <<'EOF'
+usage() { cat <<'EOF'
 Usage: fieldkit-install.sh [--dry-run]
 
   --dry-run     Show package choices and planned changes without modifying the system.
   -h, --help    Show this help.
 EOF
 }
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --dry-run) DRY_RUN=true ;;
-        -h|--help) usage; exit 0 ;;
-        *) fail "Unknown option: $1" ;;
-    esac
-    shift
-done
+while [[ $# -gt 0 ]]; do case "$1" in --dry-run) DRY_RUN=true ;; -h|--help) usage; exit 0 ;; *) fail "Unknown option: $1" ;; esac; shift; done
 
 log "Starting ${SCRIPT_NAME} installer."
 [[ "${EUID}" -eq 0 ]] && fail "Do not run this script as root. Run it as your normal user; sudo will be requested when needed."
-require_command sudo
-require_command lsb_release
-require_command apt-get
-require_command apt-cache
-require_command dpkg-query
+require_command sudo; require_command lsb_release; require_command apt-get; require_command apt-cache; require_command dpkg-query
 [[ -f "${CONFIG_FILE}" ]] || fail "Package catalog not found: ${CONFIG_FILE}"
-
-if [[ "$(lsb_release -is)" != "Linuxmint" ]]; then
-    fail "This installer is intended for Linux Mint. Detected: $(lsb_release -is)"
-fi
+[[ "$(lsb_release -is)" == "Linuxmint" ]] || fail "This installer is intended for Linux Mint. Detected: $(lsb_release -is)"
 mint_release="$(lsb_release -rs)"
 [[ "${mint_release}" == "22.3" ]] || fail "This version targets Linux Mint 22.3. Detected: ${mint_release}"
-if [[ "${XDG_CURRENT_DESKTOP:-}" != *MATE* && "${XDG_CURRENT_DESKTOP:-}" != *MATE:* ]]; then
-    log "WARNING: MATE desktop was not detected from XDG_CURRENT_DESKTOP='${XDG_CURRENT_DESKTOP:-unset}'."
-fi
+if [[ "${XDG_CURRENT_DESKTOP:-}" != *MATE* && "${XDG_CURRENT_DESKTOP:-}" != *MATE:* ]]; then log "WARNING: MATE desktop was not detected from XDG_CURRENT_DESKTOP='${XDG_CURRENT_DESKTOP:-unset}'."; fi
 log "Validated Linux Mint ${mint_release}."
 
-is_installed() {
-    local package="$1"
-    [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" == "install ok installed" ]]
-}
-
-apt_package_available() {
-    local package="$1"
-    apt-cache show "${package}" >/dev/null 2>&1
-}
-
-install_apt_packages() {
-    local operation="$1"; shift
-    local -a packages=("$@")
-    [[ "${#packages[@]}" -gt 0 ]] || return 0
-    if [[ "${operation}" == "install" ]]; then
-        sudo apt-get install -y -- "${packages[@]}"
-    else
-        sudo apt-get remove --purge -y -- "${packages[@]}"
-    fi
-}
+is_installed() { local package="$1"; [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" == "install ok installed" ]]; }
+apt_package_available() { local package="$1"; apt-cache show "${package}" >/dev/null 2>&1; }
+install_apt_packages() { local operation="$1"; shift; local -a packages=("$@"); [[ "${#packages[@]}" -gt 0 ]] || return 0; if [[ "${operation}" == install ]]; then sudo apt-get install -y -- "${packages[@]}"; else sudo apt-get remove --purge -y -- "${packages[@]}"; fi; }
 
 setup_tailscale_repository() {
     if is_installed tailscale || apt_package_available tailscale; then return 0; fi
-    if [[ "${DRY_RUN}" == true ]]; then
-        log "DRY RUN: Tailscale external source detected; it will be available during a real run."
-        return 0
-    fi
-    if ! command -v curl >/dev/null 2>&1; then
-        log "curl is required to configure Tailscale; installing curl first."
-        install_apt_packages install curl
-    fi
+    [[ "${DRY_RUN}" == true ]] && { log "DRY RUN: Tailscale external source detected; it will be available during a real run."; return 0; }
+    if ! command -v curl >/dev/null 2>&1; then log "curl is required to configure Tailscale; installing curl first."; install_apt_packages install curl; fi
     local ubuntu_codename="${UBUNTU_CODENAME:-}"
-    if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release
-        ubuntu_codename="${UBUNTU_CODENAME:-}"
-    fi
+    if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then . /etc/os-release; ubuntu_codename="${UBUNTU_CODENAME:-}"; fi
     [[ -n "${ubuntu_codename}" ]] || fail "Unable to determine the Ubuntu base codename required for the Tailscale repository."
-    case "${ubuntu_codename}" in
-        noble|jammy|focal|bionic|xenial) ;;
-        *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;;
-    esac
+    case "${ubuntu_codename}" in noble|jammy|focal|bionic|xenial) ;; *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;; esac
     log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
     sudo mkdir -p --mode=0755 /usr/share/keyrings
-    curl -fsSL --retry 3 --retry-delay 2 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-    curl -fsSL --retry 3 --retry-delay 2 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
-    sudo apt-get update -y
+    curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+    curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.tailscale-keyring.list" | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+    sudo apt-get update
 }
 
 load_catalog() {
@@ -133,28 +68,16 @@ load_catalog() {
     while IFS='|' read -r action package name recommendation reason source; do
         [[ -z "${action}" || "${action}" == \#* ]] && continue
         case "${action}" in
-            remove)
-                if is_installed "${package}"; then
-                    REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED")
-                fi
-                ;;
-            install)
-                INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
-                if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED")
-                elif [[ "${source}" == external:* ]]; then INSTALL_STATES+=("EXTERNAL")
-                elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
-                else INSTALL_STATES+=("UNAVAILABLE"); fi
-                ;;
+            remove) if is_installed "${package}"; then REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED"); fi ;;
+            install) INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}"); if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED"); elif [[ "${source}" == external:* ]]; then INSTALL_STATES+=("EXTERNAL"); elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE"); else INSTALL_STATES+=("UNAVAILABLE"); fi ;;
             *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;;
         esac
     done < "${CONFIG_FILE}"
 }
-
 validate_catalog() {
     local line_number=0 line action package name recommendation reason source extra
     while IFS= read -r line || [[ -n "${line}" ]]; do
-        ((line_number += 1))
-        [[ -z "${line}" || "${line}" == \#* ]] && continue
+        ((line_number += 1)); [[ -z "${line}" || "${line}" == \#* ]] && continue
         IFS='|' read -r action package name recommendation reason source extra <<< "${line}"
         [[ -z "${action}" || -z "${package}" || -z "${name}" || -z "${recommendation}" || -z "${reason}" || -z "${source}" || -n "${extra}" ]] && fail "Malformed package catalog entry at ${CONFIG_FILE}:${line_number}"
         case "${action}" in install|remove) ;; *) fail "Invalid action '${action}' at ${CONFIG_FILE}:${line_number}" ;; esac
@@ -162,82 +85,52 @@ validate_catalog() {
         [[ "${package}" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || fail "Invalid package name '${package}' at ${CONFIG_FILE}:${line_number}"
     done < "${CONFIG_FILE}"
 }
+contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
-contains_number() {
-    local needle="$1"; shift; local value
-    for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done
-    return 1
-}
-
-dry_run_external_package() {
-    local package="$1"
-    case "${package}" in
-        tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;;
-        wifiman) log "DRY RUN: would download and install the official Ubiquiti WiFiman Desktop AMD64 package." ;;
-        drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;;
-        nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;;
-        chirp) log "DRY RUN: would install CHIRP dependencies, download the latest official CHIRP-next wheel, and install it with pipx." ;;
-        *) fail "No external installer is defined for package '${package}'." ;;
-    esac
-}
-
-require_amd64() {
-    [[ "$(dpkg --print-architecture)" == "amd64" ]] || fail "$1 currently requires an amd64/x86_64 system."
-}
+dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: would download and install the official Ubiquiti WiFiman Desktop AMD64 package." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies, download the latest official CHIRP-next wheel, and install it with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
+require_amd64() { [[ "$(dpkg --print-architecture)" == amd64 ]] || fail "$1 currently requires an amd64/x86_64 system."; }
 
 require_downloaded_file() {
     local file="$1" description="$2"
     [[ -s "${file}" ]] || fail "${description} download is empty or missing."
+    require_command file
     file "${file}" | grep -qiE 'Debian binary package|ELF|Zip archive|Python wheel|POSIX shell script|application' || log "WARNING: downloaded ${description} has an unexpected file type; continuing to installer validation."
+}
+
+curl_download() {
+    local url="$1" output="$2" description="$3"
+    log "Downloading ${description}."
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -o "${output}" -- "${url}"
 }
 
 install_external_package() {
     local package="$1"
     case "${package}" in
-        tailscale)
-            log "Installing Tailscale from its configured official APT repository."
-            install_apt_packages install tailscale
-            ;;
+        tailscale) log "Installing Tailscale from its configured official APT repository."; install_apt_packages install tailscale ;;
         wifiman)
-            require_amd64 "WiFiman Desktop"
-            require_command curl
-            local temp_dir deb_file
-            temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/wifiman-desktop.deb"
-            log "Downloading the official Ubiquiti WiFiman Desktop Linux package."
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${WIFIMAN_DOWNLOAD_URL}" -o "${deb_file}"
-            require_downloaded_file "${deb_file}" "WiFiman Desktop"
-            log "Installing WiFiman Desktop."
-            sudo apt-get install -y -- "${deb_file}"
+            require_amd64 "WiFiman Desktop"; require_command curl
+            local temp_dir deb_file; temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/wifiman-desktop.deb"
+            curl_download "${WIFIMAN_DOWNLOAD_URL}" "${deb_file}" "the official Ubiquiti WiFiman Desktop Linux package"
+            require_downloaded_file "${deb_file}" "WiFiman Desktop"; log "Installing WiFiman Desktop."; sudo apt-get install -y -- "${deb_file}"
             ;;
         drawio)
-            require_amd64 "draw.io Desktop"
-            require_command curl
-            local temp_dir drawio_url deb_file
-            temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/drawio-amd64.deb"
+            require_amd64 "draw.io Desktop"; require_command curl
+            local temp_dir drawio_url deb_file; temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/drawio-amd64.deb"
             log "Resolving the latest official draw.io Desktop Linux package."
-            drawio_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 -H 'Accept: application/vnd.github+json' "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
+            drawio_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -H 'Accept: application/vnd.github+json' -- "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
             [[ -n "${drawio_url}" ]] || fail "Unable to locate the latest official draw.io AMD64 .deb."
-            log "Downloading the official draw.io Desktop Linux package."
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${drawio_url}" -o "${deb_file}"
-            require_downloaded_file "${deb_file}" "draw.io Desktop"
-            log "Installing draw.io Desktop."
-            sudo apt-get install -y -- "${deb_file}"
+            curl_download "${drawio_url}" "${deb_file}" "the official draw.io Desktop Linux package"
+            require_downloaded_file "${deb_file}" "draw.io Desktop"; log "Installing draw.io Desktop."; sudo apt-get install -y -- "${deb_file}"
             ;;
         nextcloud)
-            require_amd64 "Nextcloud Desktop AppImage"
-            require_command curl
-            local temp_dir nextcloud_url appimage_path desktop_dir appimage_file
-            temp_dir="$(new_temp_dir)"
-            nextcloud_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^\"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
+            require_amd64 "Nextcloud Desktop AppImage"; require_command curl
+            local temp_dir nextcloud_url appimage_path desktop_dir appimage_file; temp_dir="$(new_temp_dir)"
+            nextcloud_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -- "${NEXTCLOUD_RELEASE_URL}" | sed -n 's/.*href="\(Nextcloud-[0-9][^\"]*-x86_64\.AppImage\)".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${nextcloud_url}" ]] || fail "Unable to locate the latest official Nextcloud x86_64 AppImage."
-            appimage_path="${HOME}/.local/bin/nextcloud"
-            desktop_dir="${HOME}/.local/share/applications"
-            appimage_file="${temp_dir}/nextcloud.AppImage"
+            appimage_path="${HOME}/.local/bin/nextcloud"; desktop_dir="${HOME}/.local/share/applications"; appimage_file="${temp_dir}/nextcloud.AppImage"
             mkdir -p "${HOME}/.local/bin" "${desktop_dir}"
-            log "Downloading the official Nextcloud Desktop Client AppImage: ${nextcloud_url}"
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${NEXTCLOUD_RELEASE_URL}${nextcloud_url}" -o "${appimage_file}"
-            require_downloaded_file "${appimage_file}" "Nextcloud Desktop Client"
-            install -m 0755 "${appimage_file}" "${appimage_path}"
+            curl_download "${NEXTCLOUD_RELEASE_URL}${nextcloud_url}" "${appimage_file}" "the official Nextcloud Desktop Client AppImage"
+            require_downloaded_file "${appimage_file}" "Nextcloud Desktop Client"; install -m 0755 "${appimage_file}" "${appimage_path}"
             cat > "${desktop_dir}/nextcloud.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -252,30 +145,19 @@ EOF
             log "Nextcloud Desktop Client installed at ${appimage_path}."
             ;;
         chirp)
-            require_amd64 "CHIRP"
-            require_command curl
-            if ! command -v pipx >/dev/null 2>&1; then
-                log "pipx is required for CHIRP; installing it first."
-                install_apt_packages install pipx
-            fi
+            require_amd64 "CHIRP"; require_command curl
+            if ! command -v pipx >/dev/null 2>&1; then log "pipx is required for CHIRP; installing it first."; install_apt_packages install pipx; fi
             install_apt_packages install python3-wxgtk4.0 python3-yattag pipx
-            local temp_dir chirp_release_dir chirp_url wheel_file
-            temp_dir="$(new_temp_dir)"
-            chirp_release_dir="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${CHIRP_RELEASE_BASE_URL}" | sed -n 's/.*href="\(next-[0-9][0-9]*\)\/".*/\1/p' | sort -V | tail -n 1)"
+            local temp_dir chirp_release_dir chirp_url wheel_file; temp_dir="$(new_temp_dir)"
+            chirp_release_dir="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -- "${CHIRP_RELEASE_BASE_URL}" | sed -n 's/.*href="\(next-[0-9][0-9]*\)\/".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${chirp_release_dir}" ]] || fail "Unable to locate the latest official CHIRP-next build."
-            chirp_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" | sed -n 's/.*href="\(chirp-[0-9][0-9]*-py3-none-any\.whl\)".*/\1/p' | sort -V | tail -n 1)"
+            chirp_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" | sed -n 's/.*href="\(chirp-[0-9][0-9]*-py3-none-any\.whl\)".*/\1/p' | sort -V | tail -n 1)"
             [[ -n "${chirp_url}" ]] || fail "Unable to locate the latest official CHIRP Python wheel."
             wheel_file="${temp_dir}/${chirp_url}"
-            log "Downloading the latest official CHIRP-next Python wheel: ${chirp_url}"
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" -o "${wheel_file}"
+            curl_download "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" "${wheel_file}" "the latest official CHIRP-next Python wheel"
             require_downloaded_file "${wheel_file}" "CHIRP-next"
-            if pipx list 2>/dev/null | grep -qE 'package chirp '; then
-                log "Updating the existing pipx-managed CHIRP installation."
-                pipx uninstall chirp
-            fi
-            log "Installing CHIRP-next for the current user."
-            pipx install --system-site-packages "${wheel_file}"
-            log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
+            if pipx list 2>/dev/null | grep -qE 'package chirp '; then log "Updating the existing pipx-managed CHIRP installation."; pipx uninstall chirp; fi
+            log "Installing CHIRP-next for the current user."; pipx install --system-site-packages "${wheel_file}"; log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
             ;;
         *) fail "No external installer is defined for package '${package}'." ;;
     esac
@@ -285,88 +167,50 @@ choose_packages() {
     local action="$1"; local -n packages="$2"; local -n names="$3"; local -n recommendations="$4"; local -n reasons="$5"; local -n sources="$6"; local -n states="$7"
     local -a selected=(); local prompt answer item
     if [[ "${#packages[@]}" -eq 0 ]]; then log "No matching ${action} candidates were found on this system."; printf '\n'; return 0; fi
-    printf '\n'
-    if [[ "${action}" == "remove" ]]; then printf '%s\n' "FieldKit — Applications detected for possible removal"; else printf '%s\n' "FieldKit — Field applications"; fi
-    printf '%s\n\n' '------------------------------------------------------------'
+    printf '\n'; [[ "${action}" == remove ]] && printf '%s\n' "FieldKit — Applications detected for possible removal" || printf '%s\n' "FieldKit — Field applications"; printf '%s\n\n' '------------------------------------------------------------'
     for item in "${!packages[@]}"; do
-        if [[ "${action}" == "remove" ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"
-        else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"; fi
+        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"; fi
         printf '       %s\n' "${reasons[item]}"
     done
-    printf '\nEnter numbers separated by spaces/commas, or: r=recommended, a=all, n=none\n'
-    [[ "${action}" == "remove" ]] && prompt='Remove' || prompt='Install'
+    printf '\nEnter numbers separated by spaces/commas, or: r=recommended, a=all, n=none\n'; [[ "${action}" == remove ]] && prompt=Remove || prompt=Install
     while true; do
         read -r -p "${prompt} selection: " answer; answer="${answer//,/ }"; selected=()
         case "${answer,,}" in
             n|none|'') ;;
-            a|all)
-                for item in "${!packages[@]}"; do
-                    if [[ "${action}" == "remove" || "${states[item]}" == "AVAILABLE" || "${states[item]}" == "EXTERNAL" ]]; then selected+=("${item}"); fi
-                done
-                ;;
-            r|recommended)
-                for item in "${!packages[@]}"; do
-                    if [[ "${action}" == "remove" ]]; then [[ "${recommendations[item]}" == "REMOVE" ]] && selected+=("${item}")
-                    elif [[ "${recommendations[item]}" == "RECOMMENDED" && ( "${states[item]}" == "AVAILABLE" || "${states[item]}" == "EXTERNAL" ) ]]; then selected+=("${item}"); fi
-                done
-                ;;
+            a|all) for item in "${!packages[@]}"; do if [[ "${action}" == remove || "${states[item]}" == AVAILABLE || "${states[item]}" == EXTERNAL ]]; then selected+=("${item}"); fi; done ;;
+            r|recommended) for item in "${!packages[@]}"; do if [[ "${action}" == remove ]]; then [[ "${recommendations[item]}" == REMOVE ]] && selected+=("${item}"); elif [[ "${recommendations[item]}" == RECOMMENDED && ( "${states[item]}" == AVAILABLE || "${states[item]}" == EXTERNAL ) ]]; then selected+=("${item}"); fi; done ;;
             *)
                 local valid=true
-                for item in ${answer}; do
-                    [[ "${item}" =~ ^[0-9]+$ ]] || { valid=false; break; }
-                    item=$((item - 1)); (( item >= 0 && item < ${#packages[@]} )) || { valid=false; break; }
-                    if [[ "${action}" == "install" && "${states[item]}" != "AVAILABLE" && "${states[item]}" != "EXTERNAL" ]]; then printf 'Package %s is not available for installation (%s).\n' "${names[item]}" "${states[item]}"; valid=false; break; fi
-                    contains_number "${item}" "${selected[@]}" || selected+=("${item}")
-                done
-                ${valid} || { printf 'Invalid selection. Please try again.\n'; continue; }
-                ;;
-        esac
-        break
+                for item in ${answer}; do [[ "${item}" =~ ^[0-9]+$ ]] || { valid=false; break; }; item=$((item - 1)); (( item >= 0 && item < ${#packages[@]} )) || { valid=false; break; }; if [[ "${action}" == install && "${states[item]}" != AVAILABLE && "${states[item]}" != EXTERNAL ]]; then printf 'Package %s is not available for installation (%s).\n' "${names[item]}" "${states[item]}"; valid=false; break; fi; contains_number "${item}" "${selected[@]}" || selected+=("${item}"); done
+                ${valid} || { printf 'Invalid selection. Please try again.\n'; continue; } ;;
+        esac; break
     done
     [[ "${#selected[@]}" -eq 0 ]] && return 0
-    printf '\nSelected packages:\n'
-    for item in "${selected[@]}"; do
-        if [[ "${action}" == "install" ]]; then printf '  - %s (%s) [%s]\n' "${names[item]}" "${packages[item]}" "${states[item]}"; else printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"; fi
-    done
-    printf '\n'
+    printf '\nSelected packages:\n'; for item in "${selected[@]}"; do if [[ "${action}" == install ]]; then printf '  - %s (%s) [%s]\n' "${names[item]}" "${packages[item]}" "${states[item]}"; else printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"; fi; done; printf '\n'
     if [[ "${DRY_RUN}" == true ]]; then
-        if [[ "${action}" == "install" ]]; then
-            for item in "${selected[@]}"; do
-                if [[ "${sources[item]}" == external:* ]]; then dry_run_external_package "${packages[item]}"; else log "DRY RUN: would install APT package ${packages[item]}."; fi
-            done
-        else
-            for item in "${selected[@]}"; do log "DRY RUN: would remove ${packages[item]} (purge)."; done
-        fi
-        printf 'DRY RUN: no packages will be changed.\n'
-        return 0
+        if [[ "${action}" == install ]]; then for item in "${selected[@]}"; do if [[ "${sources[item]}" == external:* ]]; then dry_run_external_package "${packages[item]}"; else log "DRY RUN: would install APT package ${packages[item]}."; fi; done; else for item in "${selected[@]}"; do log "DRY RUN: would remove ${packages[item]} (purge)."; done; fi
+        printf 'DRY RUN: no packages will be changed.\n'; return 0
     fi
-    read -r -p "Proceed with this ${action} operation? [y/N] " answer
-    [[ "${answer}" =~ ^[Yy]$ ]] || { log "${action^} operation cancelled by user."; return 0; }
-    local -a selected_packages=()
-    for item in "${selected[@]}"; do selected_packages+=("${packages[item]}"); done
-    if [[ "${action}" == "remove" ]]; then
-        log "Previewing removal of selected packages: ${selected_packages[*]}"
-        sudo apt-get -s remove --purge -- "${selected_packages[@]}"
-        read -r -p "Removal preview completed. Execute the removal? [y/N] " answer
-        [[ "${answer}" =~ ^[Yy]$ ]] || { log "Removal cancelled after preview."; return 0; }
-        log "Removing selected packages: ${selected_packages[*]}"
-        install_apt_packages remove "${selected_packages[@]}"
+    read -r -p "Proceed with this ${action} operation? [y/N] " answer; [[ "${answer}" =~ ^[Yy]$ ]] || { log "${action^} operation cancelled by user."; return 0; }
+    local -a selected_packages=(); for item in "${selected[@]}"; do selected_packages+=("${packages[item]}"); done
+    if [[ "${action}" == remove ]]; then
+        log "Previewing removal of selected packages: ${selected_packages[*]}"; sudo apt-get -s remove --purge -- "${selected_packages[@]}"; read -r -p "Removal preview completed. Execute the removal? [y/N] " answer; [[ "${answer}" =~ ^[Yy]$ ]] || { log "Removal cancelled after preview."; return 0; }; log "Removing selected packages: ${selected_packages[*]}"; install_apt_packages remove "${selected_packages[@]}"
     else
         local index package source
         for index in "${selected[@]}"; do
             package="${packages[index]}"; source="${sources[index]}"
-            if [[ "${source}" == external:* ]]; then install_external_package "${package}"; else log "Installing selected APT package: ${package}"; install_apt_packages install "${package}"; fi
+            if [[ "${source}" == external:* ]]; then
+                if ! install_external_package "${package}"; then log "ERROR: External package '${package}' failed to install. Continuing with remaining FieldKit selections."; fi
+            else
+                log "Installing selected APT package: ${package}"; install_apt_packages install "${package}"
+            fi
         done
     fi
 }
 
 validate_catalog
 load_catalog
-for item in "${!INSTALL_PACKAGES[@]}"; do
-    if [[ "${INSTALL_SOURCES[item]}" == "external:tailscale" ]]; then setup_tailscale_repository; break; fi
-done
-
+for item in "${!INSTALL_PACKAGES[@]}"; do if [[ "${INSTALL_SOURCES[item]}" == external:tailscale ]]; then setup_tailscale_repository; break; fi; done
 choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS REMOVE_SOURCES REMOVE_STATES
 choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS INSTALL_SOURCES INSTALL_STATES
-
 log "FieldKit installer completed. Review ${LOG_FILE}."
