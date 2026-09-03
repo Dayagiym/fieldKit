@@ -47,12 +47,17 @@ is_installed() { local package="$1"; [[ "$(dpkg-query -W -f='${Status}' "${packa
 apt_package_available() { local package="$1"; apt-cache show "${package}" >/dev/null 2>&1; }
 install_apt_packages() { local operation="$1"; shift; local -a packages=("$@"); [[ "${#packages[@]}" -gt 0 ]] || return 0; if [[ "${operation}" == install ]]; then sudo apt-get install -y -- "${packages[@]}"; else sudo apt-get remove --purge -y -- "${packages[@]}"; fi; }
 
+ubuntu_codename() {
+    local codename="${UBUNTU_CODENAME:-}"
+    if [[ -z "${codename}" && -r /etc/os-release ]]; then . /etc/os-release; codename="${UBUNTU_CODENAME:-}"; fi
+    printf '%s\n' "${codename}"
+}
+
 setup_tailscale_repository() {
     if is_installed tailscale || apt_package_available tailscale; then return 0; fi
     [[ "${DRY_RUN}" == true ]] && { log "DRY RUN: Tailscale external source detected; it will be available during a real run."; return 0; }
     if ! command -v curl >/dev/null 2>&1; then log "curl is required to configure Tailscale; installing curl first."; install_apt_packages install curl; fi
-    local ubuntu_codename="${UBUNTU_CODENAME:-}"
-    if [[ -z "${ubuntu_codename}" && -r /etc/os-release ]]; then . /etc/os-release; ubuntu_codename="${UBUNTU_CODENAME:-}"; fi
+    local ubuntu_codename="$(ubuntu_codename)"
     [[ -n "${ubuntu_codename}" ]] || fail "Unable to determine the Ubuntu base codename required for the Tailscale repository."
     case "${ubuntu_codename}" in noble|jammy|focal|bionic|xenial) ;; *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;; esac
     log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
@@ -69,7 +74,15 @@ load_catalog() {
         [[ -z "${action}" || "${action}" == \#* ]] && continue
         case "${action}" in
             remove) if is_installed "${package}"; then REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED"); fi ;;
-            install) INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}"); if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED"); elif [[ "${source}" == external:* ]]; then INSTALL_STATES+=("EXTERNAL"); elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE"); else INSTALL_STATES+=("UNAVAILABLE"); fi ;;
+            install)
+                INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
+                if is_installed "${package}"; then
+                    INSTALL_STATES+=("INSTALLED")
+                elif [[ "${source}" == external:* ]]; then
+                    if [[ "${package}" == "wifiman" && "$(ubuntu_codename)" == "noble" ]]; then INSTALL_STATES+=("UNSUPPORTED"); else INSTALL_STATES+=("EXTERNAL"); fi
+                elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
+                else INSTALL_STATES+=("UNAVAILABLE"); fi
+                ;;
             *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;;
         esac
     done < "${CONFIG_FILE}"
@@ -87,7 +100,7 @@ validate_catalog() {
 }
 contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
-dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: would download and install the official Ubiquiti WiFiman Desktop AMD64 package." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies, download the latest official CHIRP-next wheel, and install it with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
+dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies, download the latest official CHIRP-next wheel, and install it with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
 require_amd64() { [[ "$(dpkg --print-architecture)" == amd64 ]] || fail "$1 currently requires an amd64/x86_64 system."; }
 
 require_downloaded_file() {
@@ -108,6 +121,10 @@ install_external_package() {
     case "${package}" in
         tailscale) log "Installing Tailscale from its configured official APT repository."; install_apt_packages install tailscale ;;
         wifiman)
+            if [[ "$(ubuntu_codename)" == "noble" ]]; then
+                log "WARNING: Skipping WiFiman Desktop on Linux Mint 22.3. Ubiquiti's stable Linux package 1.1.3 requires libwebkit2gtk-4.0-37, which is unavailable on Ubuntu 24.04. A newer Ubiquiti Linux build exists in Early Access, but FieldKit will not install an unreleased vendor package automatically."
+                return 0
+            fi
             require_amd64 "WiFiman Desktop"; require_command curl
             local temp_dir deb_file; temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/wifiman-desktop.deb"
             curl_download "${WIFIMAN_DOWNLOAD_URL}" "${deb_file}" "the official Ubiquiti WiFiman Desktop Linux package"
@@ -117,7 +134,7 @@ install_external_package() {
             require_amd64 "draw.io Desktop"; require_command curl
             local temp_dir drawio_url deb_file; temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/drawio-amd64.deb"
             log "Resolving the latest official draw.io Desktop Linux package."
-            drawio_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -H 'Accept: application/vnd.github+json' -- "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*draw\.io-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
+            drawio_url="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -H 'Accept: application/vnd.github+json' -- "${DRAWIO_RELEASE_API}" | sed -n 's/.*"browser_download_url": "\([^\"]*drawio-amd64-[^\"]*\.deb\)".*/\1/p' | head -n 1)"
             [[ -n "${drawio_url}" ]] || fail "Unable to locate the latest official draw.io AMD64 .deb."
             curl_download "${drawio_url}" "${deb_file}" "the official draw.io Desktop Linux package"
             require_downloaded_file "${deb_file}" "draw.io Desktop"; log "Installing draw.io Desktop."; sudo apt-get install -y -- "${deb_file}"
@@ -169,7 +186,7 @@ choose_packages() {
     if [[ "${#packages[@]}" -eq 0 ]]; then log "No matching ${action} candidates were found on this system."; printf '\n'; return 0; fi
     printf '\n'; [[ "${action}" == remove ]] && printf '%s\n' "FieldKit — Applications detected for possible removal" || printf '%s\n' "FieldKit — Field applications"; printf '%s\n\n' '------------------------------------------------------------'
     for item in "${!packages[@]}"; do
-        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"; fi
+        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}" "${states[item]}" "${packages[item]}"; fi
         printf '       %s\n' "${reasons[item]}"
     done
     printf '\nEnter numbers separated by spaces/commas, or: r=recommended, a=all, n=none\n'; [[ "${action}" == remove ]] && prompt=Remove || prompt=Install
