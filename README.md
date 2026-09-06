@@ -1,8 +1,8 @@
 # 🧰 Mint FieldKit
 
-> **A lightweight, repeatable Linux Mint MATE workstation for network technicians, structured cabling professionals, and IT field service.**
+> **A lightweight, repeatable Linux Mint workstation for network technicians, structured cabling professionals, and IT field service.**
 
-Mint FieldKit transforms a standard **Linux Mint 22.3 MATE** installation into a practical, lean, field-ready workstation. It is designed around the realities of working on customer sites: limited storage, unfamiliar networks, offline work, equipment diagnostics, documentation, and the need to get useful tools running quickly.
+Mint FieldKit transforms a standard **Linux Mint 22.3 MATE or Cinnamon** installation into a practical, lean, field-ready workstation. It is designed around the realities of working on customer sites: limited storage, unfamiliar networks, offline work, equipment diagnostics, documentation, and the need to get useful tools running quickly.
 
 ---
 
@@ -22,6 +22,31 @@ It can:
 - ☁️ Synchronize field documentation with Nextcloud
 - 🧪 Preview changes safely with dry-run mode
 - 📦 Keep the package catalog separate from the installer logic
+- 🖥️ Support both Linux Mint MATE and Cinnamon flavors
+
+---
+
+## 🖥️ Desktop Flavors
+
+FieldKit uses one common package catalog and installer engine for the supported Mint desktop environments.
+
+### MATE
+
+The original FieldKit flavor, optimized for the project's constrained-hardware roots and especially suitable for low-storage systems.
+
+```bash
+./scripts/fieldkit-install.sh --dry-run
+```
+
+### Cinnamon
+
+The Cinnamon flavor provides the same field toolkit while explicitly validating that the workstation is running Linux Mint Cinnamon.
+
+```bash
+./scripts/fieldkit-install-cinnamon.sh --dry-run
+```
+
+The Cinnamon launcher delegates to the common installer, so package recommendations and installer behavior remain consistent between flavors.
 
 ---
 
@@ -124,6 +149,12 @@ FieldKit supports a safe preview mode:
 ./scripts/fieldkit-install.sh --dry-run
 ```
 
+or for Cinnamon:
+
+```bash
+./scripts/fieldkit-install-cinnamon.sh --dry-run
+```
+
 Dry-run mode shows what FieldKit would remove or install without changing the system.
 
 The interactive menus allow the technician to choose:
@@ -139,7 +170,7 @@ This makes FieldKit useful both as an automated deployment tool and as an intera
 
 ## 📦 Package Catalog
 
-Package recommendations are maintained in:
+Recommendations are maintained in:
 
 ```text
 config/packages.conf
@@ -154,14 +185,17 @@ The catalog supports different application sources, including:
 - `external:ubiquiti` — Ubiquiti WiFiman
 - `external:drawio` — draw.io Desktop
 - `external:nextcloud` — Nextcloud Desktop Client
+- `external:chirp` — CHIRP
 
-This separation is intended to make FieldKit easier to maintain and extend.
+Both desktop flavors use the same catalog.
 
 ---
 
 ## 🚀 Installation
 
-Clone the repository and run the installer:
+Clone the repository and run the appropriate flavor.
+
+### MATE
 
 ```bash
 git clone https://github.com/Dayagiym/fieldKit.git
@@ -170,11 +204,16 @@ chmod +x scripts/fieldkit-install.sh
 ./scripts/fieldkit-install.sh
 ```
 
-For a first pass, use dry-run mode:
+### Cinnamon
 
 ```bash
-./scripts/fieldkit-install.sh --dry-run
+git clone https://github.com/Dayagiym/fieldKit.git
+cd fieldKit
+chmod +x scripts/fieldkit-install-cinnamon.sh
+./scripts/fieldkit-install-cinnamon.sh
 ```
+
+For a first pass, use dry-run mode.
 
 > **Tip:** FieldKit is designed to be run as a normal user. It requests elevated privileges only for operations that require them.
 
@@ -192,7 +231,7 @@ A fresh Mint installation should be transformable into a predictable working env
 
 ### 🛠️ Keep It Maintainable
 
-The package catalog is separated from installer logic so applications can be added or removed without rewriting the entire script.
+The package catalog is separated from installer logic so applications can be added or removed without rewriting the entire script. Desktop flavors share the same installer engine and catalog rather than creating separate forks.
 
 ### 🎯 Keep It Practical
 
@@ -226,7 +265,7 @@ FieldKit was originally developed around a **Lenovo Chromebook 14e** converted f
 - **4 GB RAM**
 - **32 GB storage**
 
-That constraint is part of the project's DNA. FieldKit is intended to remain useful even when the hardware is modest and storage is scarce.
+The project now also supports Cinnamon while retaining those lightweight constraints as part of FieldKit's design goals.
 
 ---
 
