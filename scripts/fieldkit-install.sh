@@ -11,7 +11,7 @@ readonly LOG_FILE="${LOG_DIR}/install.log"
 readonly WIFIMAN_DOWNLOAD_URL="https://desktop.wifiman.com/wifiman-desktop-1.1.3-amd64.deb"
 readonly DRAWIO_RELEASE_API="https://api.github.com/repos/jgraph/drawio-desktop/releases/latest"
 readonly NEXTCLOUD_RELEASE_URL="https://download.nextcloud.com/desktop/releases/Linux/"
-readonly CHIRP_RELEASE_BASE_URL="https://archive.chirpmyradio.com/chirp_next/"
+readonly CHIRP_GIT_URL="https://github.com/kk7ds/chirp.git"
 
 DRY_RUN=false
 TEMP_DIRS=()
@@ -85,8 +85,7 @@ load_catalog() {
             remove) if is_installed "${package}"; then REMOVE_PACKAGES+=("${package}"); REMOVE_NAMES+=("${name}"); REMOVE_RECS+=("${recommendation}"); REMOVE_REASONS+=("${reason}"); REMOVE_SOURCES+=("${source}"); REMOVE_STATES+=("INSTALLED"); fi ;;
             install)
                 INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
-                if is_installed "${package}"; then
-                    INSTALL_STATES+=("INSTALLED")
+                if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED")
                 elif [[ "${source}" == external:* ]]; then
                     if [[ "${package}" == "wifiman" && "$(ubuntu_codename)" == "noble" ]]; then INSTALL_STATES+=("UNSUPPORTED"); else INSTALL_STATES+=("EXTERNAL"); fi
                 elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
@@ -109,7 +108,7 @@ validate_catalog() {
 }
 contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
-dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies, locate the latest official CHIRP-next wheel, and install it with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
+dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies and install CHIRP-next from the official CHIRP Git repository with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
 require_amd64() { [[ "$(dpkg --print-architecture)" == amd64 ]] || fail "$1 currently requires an amd64/x86_64 system."; }
 
 require_downloaded_file() {
@@ -171,91 +170,75 @@ EOF
             log "Nextcloud Desktop Client installed at ${appimage_path}."
             ;;
         chirp)
-            require_amd64 "CHIRP"; require_command curl
-            if ! command -v pipx >/dev/null 2>&1; then log "pipx is required for CHIRP; installing it first."; install_apt_packages install pipx; fi
-            install_apt_packages install python3-wxgtk4.0 python3-yattag pipx
-            local temp_dir chirp_release_dir chirp_url wheel_file chirp_index offset candidate_date candidate_dir candidate_wheel
-            temp_dir="$(new_temp_dir)"
-            chirp_release_dir="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}" 2>/dev/null | grep -oE 'next-[0-9]{8}/' | sed 's:/$::' | sort -V | tail -n 1 || true)"
-            if [[ -z "${chirp_release_dir}" ]]; then
-                log "CHIRP archive index did not expose its directory listing; probing recent dated CHIRP-next wheel URLs directly."
-                for offset in $(seq 0 60); do
-                    candidate_date="$(date -d "-${offset} days" '+%Y%m%d')"
-                    candidate_dir="next-${candidate_date}"
-                    candidate_wheel="chirp-${candidate_date}-py3-none-any.whl"
-                    candidate_url="${CHIRP_RELEASE_BASE_URL}${candidate_dir}/${candidate_wheel}"
-                    if curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 10 --max-time 30 -o /dev/null -- "${candidate_url}"; then
-                        chirp_release_dir="${candidate_dir}"
-                        chirp_url="${candidate_wheel}"
-                        log "Found CHIRP-next build ${candidate_date}."
-                        break
-                    fi
-                done
-            fi
-            [[ -n "${chirp_release_dir}" ]] || fail "Unable to locate the latest official CHIRP-next build."
-            if [[ -z "${chirp_url:-}" ]]; then
-                chirp_index="$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -A 'Mozilla/5.0' -- "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/" 2>/dev/null || true)"
-                chirp_url="$(printf '%s\n' "${chirp_index}" | grep -oE 'chirp-[0-9]{8}-py3-none-any\.whl' | sort -V | tail -n 1)"
-            fi
-            [[ -n "${chirp_url}" ]] || fail "Unable to locate the latest official CHIRP Python wheel."
-            wheel_file="${temp_dir}/${chirp_url}"
-            curl_download "${CHIRP_RELEASE_BASE_URL}${chirp_release_dir}/${chirp_url}" "${wheel_file}" "the latest official CHIRP-next Python wheel"
-            require_downloaded_file "${wheel_file}" "CHIRP-next"
+            require_amd64 "CHIRP"; require_command git
+            install_apt_packages install python3-wxgtk4.0 python3-yattag pipx git
             if pipx list 2>/dev/null | grep -qE 'package chirp '; then log "Updating the existing pipx-managed CHIRP installation."; pipx uninstall chirp; fi
-            log "Installing CHIRP-next for the current user."; pipx install --system-site-packages "${wheel_file}"; log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
+            log "Installing CHIRP-next from the official CHIRP Git repository."
+            pipx install --system-site-packages "git+${CHIRP_GIT_URL}"
+            log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
             ;;
-        *) fail "No external installer is defined for package '${package}'." ;;
     esac
 }
 
 choose_packages() {
-    local action="$1"; local -n packages="$2"; local -n names="$3"; local -n recommendations="$4"; local -n reasons="$5"; local -n sources="$6"; local -n states="$7"
-    local -a selected=(); local prompt answer item
-    if [[ "${#packages[@]}" -eq 0 ]]; then log "No matching ${action} candidates were found on this system."; printf '\n'; return 0; fi
-    printf '\n'; [[ "${action}" == remove ]] && printf '%s\n' "FieldKit — Applications detected for possible removal" || printf '%s\n' "FieldKit — Field applications"; printf '%s\n\n' '------------------------------------------------------------'
-    for item in "${!packages[@]}"; do
-        if [[ "${action}" == remove ]]; then printf '  [%2d] %-20s %-12s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${packages[item]}"; else printf '  [%2d] %-20s %-12s %-11s %s\n' "$((item + 1))" "${names[item]}" "[${recommendations[item]}]" "${states[item]}" "${packages[item]}"; fi
-        printf '       %s\n' "${reasons[item]}"
+    local mode="${1}" title="${2}" -a packages names recs reasons sources states selected=() available_numbers=() recommended_numbers=() all_numbers=()
+    local i choice
+    if [[ "${mode}" == remove ]]; then packages=("${REMOVE_PACKAGES[@]}"); names=("${REMOVE_NAMES[@]}"); recs=("${REMOVE_RECS[@]}"); reasons=("${REMOVE_REASONS[@]}"); sources=("${REMOVE_SOURCES[@]}"); states=("${REMOVE_STATES[@]}")
+    else packages=("${INSTALL_PACKAGES[@]}"); names=("${INSTALL_NAMES[@]}"); recs=("${INSTALL_RECS[@]}"); reasons=("${INSTALL_REASONS[@]}"); sources=("${INSTALL_SOURCES[@]}"); states=("${INSTALL_STATES[@]}"); fi
+    [[ "${#packages[@]}" -gt 0 ]] || return 0
+    printf '\n%s\n' "${title}"; printf '%s\n' "------------------------------------------------------------"
+    for i in "${!packages[@]}"; do
+        printf '  [%2d] %-20s [%s] %s\n' "$((i+1))" "${names[$i]}" "${recs[$i]}" "${states[$i]}"
+        printf '       %s\n' "${reasons[$i]}"
+        all_numbers+=("$((i+1))")
+        [[ "${recs[$i]}" == RECOMMENDED ]] && recommended_numbers+=("$((i+1))")
     done
-    printf '\nEnter numbers separated by spaces/commas, or: r=recommended, a=all, n=none\n'; [[ "${action}" == remove ]] && prompt=Remove || prompt=Install
-    while true; do
-        read -r -p "${prompt} selection: " answer; answer="${answer//,/ }"; selected=()
-        case "${answer,,}" in
-            n|none|'') ;;
-            a|all) for item in "${!packages[@]}"; do if [[ "${action}" == remove || "${states[item]}" == AVAILABLE || "${states[item]}" == EXTERNAL ]]; then selected+=("${item}"); fi; done ;;
-            r|recommended) for item in "${!packages[@]}"; do if [[ "${action}" == remove ]]; then [[ "${recommendations[item]}" == REMOVE ]] && selected+=("${item}"); elif [[ "${recommendations[item]}" == RECOMMENDED && ( "${states[item]}" == AVAILABLE || "${states[item]}" == EXTERNAL ) ]]; then selected+=("${item}"); fi; done ;;
-            *)
-                local valid=true
-                for item in ${answer}; do [[ "${item}" =~ ^[0-9]+$ ]] || { valid=false; break; }; item=$((item - 1)); (( item >= 0 && item < ${#packages[@]} )) || { valid=false; break; }; if [[ "${action}" == install && "${states[item]}" != AVAILABLE && "${states[item]}" != EXTERNAL ]]; then printf 'Package %s is not available for installation (%s).\n' "${names[item]}" "${states[item]}"; valid=false; break; fi; contains_number "${item}" "${selected[@]}" || selected+=("${item}"); done
-                ${valid} || { printf 'Invalid selection. Please try again.\n'; continue; } ;;
-        esac; break
-    done
-    [[ "${#selected[@]}" -eq 0 ]] && return 0
-    printf '\nSelected packages:\n'; for item in "${selected[@]}"; do if [[ "${action}" == install ]]; then printf '  - %s (%s) [%s]\n' "${names[item]}" "${packages[item]}" "${states[item]}"; else printf '  - %s (%s)\n' "${names[item]}" "${packages[item]}"; fi; done; printf '\n'
-    if [[ "${DRY_RUN}" == true ]]; then
-        if [[ "${action}" == install ]]; then for item in "${selected[@]}"; do if [[ "${sources[item]}" == external:* ]]; then dry_run_external_package "${packages[item]}"; else log "DRY RUN: would install APT package ${packages[item]}."; fi; done; else for item in "${selected[@]}"; do log "DRY RUN: would remove ${packages[item]} (purge)."; done; fi
-        printf 'DRY RUN: no packages will be changed.\n'; return 0
-    fi
-    read -r -p "Proceed with this ${action} operation? [y/N] " answer; [[ "${answer}" =~ ^[Yy]$ ]] || { log "${action^} operation cancelled by user."; return 0; }
-    local -a selected_packages=(); for item in "${selected[@]}"; do selected_packages+=("${packages[item]}"); done
-    if [[ "${action}" == remove ]]; then
-        log "Previewing removal of selected packages: ${selected_packages[*]}"; sudo apt-get -s remove --purge -- "${selected_packages[@]}"; read -r -p "Removal preview completed. Execute the removal? [y/N] " answer; [[ "${answer}" =~ ^[Yy]$ ]] || { log "Removal cancelled after preview."; return 0; }; log "Removing selected packages: ${selected_packages[*]}"; install_apt_packages remove "${selected_packages[@]}"
-    else
-        local index package source
-        for index in "${selected[@]}"; do
-            package="${packages[index]}"; source="${sources[index]}"
-            if [[ "${source}" == external:* ]]; then
-                if ! install_external_package "${package}"; then log "ERROR: External package '${package}' failed to install. Continuing with remaining FieldKit selections."; fi
-            else
-                log "Installing selected APT package: ${package}"; install_apt_packages install "${package}"
-            fi
-        done
-    fi
+    printf '\nSelect: r=recommended, a=all, n=none, or numbers separated by spaces: '
+    read -r choice
+    case "${choice}" in
+        r) selected=("${recommended_numbers[@]}") ;;
+        a) selected=("${all_numbers[@]}") ;;
+        n|'') selected=() ;;
+        *) read -ra selected <<< "${choice}"; for i in "${selected[@]}"; do [[ "${i}" =~ ^[0-9]+$ ]] || fail "Invalid selection '${i}'."; (( i >= 1 && i <= ${#packages[@]} )) || fail "Selection '${i}' is out of range."; done ;;
+    esac
+    if [[ "${mode}" == remove ]]; then REMOVE_SELECTED=(); for i in "${selected[@]}"; do REMOVE_SELECTED+=("${packages[$((i-1))]}"); done
+    else INSTALL_SELECTED=(); for i in "${selected[@]}"; do INSTALL_SELECTED+=("${packages[$((i-1))]}"); done; fi
 }
 
 validate_catalog
 load_catalog
-for item in "${!INSTALL_PACKAGES[@]}"; do if [[ "${INSTALL_SOURCES[item]}" == external:tailscale ]]; then setup_tailscale_repository; break; fi; done
-choose_packages remove REMOVE_PACKAGES REMOVE_NAMES REMOVE_RECS REMOVE_REASONS REMOVE_SOURCES REMOVE_STATES
-choose_packages install INSTALL_PACKAGES INSTALL_NAMES INSTALL_RECS INSTALL_REASONS INSTALL_SOURCES INSTALL_STATES
+choose_packages remove "FieldKit — Remove applications"
+choose_packages install "FieldKit — Install applications"
+
+if [[ "${DRY_RUN}" == true ]]; then
+    for package in "${REMOVE_SELECTED[@]:-}"; do log "DRY RUN: would remove ${package}."; done
+    for package in "${INSTALL_SELECTED[@]:-}"; do
+        if [[ "${package}" == "tailscale" ]]; then dry_run_external_package tailscale
+        elif [[ "${package}" == "wifiman" || "${package}" == "drawio" || "${package}" == "nextcloud" || "${package}" == "chirp" ]]; then dry_run_external_package "${package}"
+        else log "DRY RUN: would install ${package}."; fi
+    done
+    log "FieldKit dry run completed. No system changes were made."
+    exit 0
+fi
+
+if [[ "${#REMOVE_SELECTED[@]}" -gt 0 ]]; then log "Removing selected packages."; install_apt_packages remove "${REMOVE_SELECTED[@]}"; fi
+
+if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
+    apt_packages=()
+    external_packages=()
+    for package in "${INSTALL_SELECTED[@]}"; do
+        case "$(printf '%s\n' "${INSTALL_PACKAGES[@]}" | grep -Fx -m1 "${package}" >/dev/null 2>&1; echo $?)" in
+            0) : ;;
+        esac
+        source=""
+        for i in "${!INSTALL_PACKAGES[@]}"; do [[ "${INSTALL_PACKAGES[$i]}" == "${package}" ]] && source="${INSTALL_SOURCES[$i]}" && break; done
+        if [[ "${source}" == apt ]]; then apt_packages+=("${package}"); else external_packages+=("${package}"); fi
+    done
+    [[ "${#apt_packages[@]}" -eq 0 ]] || install_apt_packages install "${apt_packages[@]}"
+    for package in "${external_packages[@]}"; do
+        [[ "${package}" == "tailscale" ]] && setup_tailscale_repository
+        install_external_package "${package}"
+    done
+fi
+
 log "FieldKit installer completed. Review ${LOG_FILE}."
