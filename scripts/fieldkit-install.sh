@@ -181,7 +181,9 @@ EOF
 }
 
 choose_packages() {
-    local mode="${1}" title="${2}" -a packages names recs reasons sources states selected=() available_numbers=() recommended_numbers=() all_numbers=()
+    local mode="${1}" title="${2}"
+    local -a packages names recs reasons sources states
+    local -a selected=() available_numbers=() recommended_numbers=() all_numbers=()
     local i choice
     if [[ "${mode}" == remove ]]; then packages=("${REMOVE_PACKAGES[@]}"); names=("${REMOVE_NAMES[@]}"); recs=("${REMOVE_RECS[@]}"); reasons=("${REMOVE_REASONS[@]}"); sources=("${REMOVE_SOURCES[@]}"); states=("${REMOVE_STATES[@]}")
     else packages=("${INSTALL_PACKAGES[@]}"); names=("${INSTALL_NAMES[@]}"); recs=("${INSTALL_RECS[@]}"); reasons=("${INSTALL_REASONS[@]}"); sources=("${INSTALL_SOURCES[@]}"); states=("${INSTALL_STATES[@]}"); fi
@@ -227,9 +229,6 @@ if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
     apt_packages=()
     external_packages=()
     for package in "${INSTALL_SELECTED[@]}"; do
-        case "$(printf '%s\n' "${INSTALL_PACKAGES[@]}" | grep -Fx -m1 "${package}" >/dev/null 2>&1; echo $?)" in
-            0) : ;;
-        esac
         source=""
         for i in "${!INSTALL_PACKAGES[@]}"; do [[ "${INSTALL_PACKAGES[$i]}" == "${package}" ]] && source="${INSTALL_SOURCES[$i]}" && break; done
         if [[ "${source}" == apt ]]; then apt_packages+=("${package}"); else external_packages+=("${package}"); fi
