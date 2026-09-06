@@ -209,16 +209,22 @@ choose_packages() {
 
 validate_catalog
 load_catalog
+REMOVE_SELECTED=()
+INSTALL_SELECTED=()
 choose_packages remove "FieldKit — Remove applications"
 choose_packages install "FieldKit — Install applications"
 
 if [[ "${DRY_RUN}" == true ]]; then
-    for package in "${REMOVE_SELECTED[@]:-}"; do log "DRY RUN: would remove ${package}."; done
-    for package in "${INSTALL_SELECTED[@]:-}"; do
-        if [[ "${package}" == "tailscale" ]]; then dry_run_external_package tailscale
-        elif [[ "${package}" == "wifiman" || "${package}" == "drawio" || "${package}" == "nextcloud" || "${package}" == "chirp" ]]; then dry_run_external_package "${package}"
-        else log "DRY RUN: would install ${package}."; fi
-    done
+    if [[ "${#REMOVE_SELECTED[@]}" -gt 0 ]]; then
+        for package in "${REMOVE_SELECTED[@]}"; do log "DRY RUN: would remove ${package}."; done
+    fi
+    if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
+        for package in "${INSTALL_SELECTED[@]}"; do
+            if [[ "${package}" == "tailscale" ]]; then dry_run_external_package tailscale
+            elif [[ "${package}" == "wifiman" || "${package}" == "drawio" || "${package}" == "nextcloud" || "${package}" == "chirp" ]]; then dry_run_external_package "${package}"
+            else log "DRY RUN: would install ${package}."; fi
+        done
+    fi
     log "FieldKit dry run completed. No system changes were made."
     exit 0
 fi
