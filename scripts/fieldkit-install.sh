@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mint FieldKit installer
-# Interactive package selection for Linux Mint 22.3 MATE or Cinnamon.
+# Interactive package selection for Linux Mint 22.3 or 23 MATE or Cinnamon.
 set -Eeuo pipefail
 
 readonly SCRIPT_NAME="Mint FieldKit"
@@ -39,7 +39,11 @@ require_command sudo; require_command lsb_release; require_command apt-get; requ
 [[ -f "${CONFIG_FILE}" ]] || fail "Package catalog not found: ${CONFIG_FILE}"
 [[ "$(lsb_release -is)" == "Linuxmint" ]] || fail "This installer is intended for Linux Mint. Detected: $(lsb_release -is)"
 mint_release="$(lsb_release -rs)"
-[[ "${mint_release}" == "22.3" ]] || fail "This version targets Linux Mint 22.3. Detected: ${mint_release}"
+case "${mint_release}" in
+    22.3) log "Validated Linux Mint 22.3 (supported/tested baseline)." ;;
+    23*) log "WARNING: Linux Mint ${mint_release} is supported/testing. Mint 23 is based on Ubuntu 26.04; external packages and ZFS tooling should be validated on the target system before production deployment." ;;
+    *) fail "This version supports Linux Mint 22.3 and 23.x. Detected: ${mint_release}" ;;
+esac
 desktop_detected=false
 for desktop_value in "${XDG_CURRENT_DESKTOP:-}" "${XDG_SESSION_DESKTOP:-}" "${DESKTOP_SESSION:-}"; do
     case "${desktop_value}" in
@@ -50,7 +54,6 @@ if [[ "${desktop_detected}" == false ]] && pgrep -x cinnamon >/dev/null 2>&1; th
     desktop_detected=true
 fi
 [[ "${desktop_detected}" == true ]] || log "WARNING: MATE or Cinnamon desktop was not detected from the current session environment."
-log "Validated Linux Mint ${mint_release}."
 
 is_installed() { local package="$1"; [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" == "install ok installed" ]]; }
 apt_package_available() { local package="$1"; apt-cache show "${package}" >/dev/null 2>&1; }
@@ -68,7 +71,7 @@ setup_tailscale_repository() {
     if ! command -v curl >/dev/null 2>&1; then log "curl is required to configure Tailscale; installing curl first."; install_apt_packages install curl; fi
     local ubuntu_codename="$(ubuntu_codename)"
     [[ -n "${ubuntu_codename}" ]] || fail "Unable to determine the Ubuntu base codename required for the Tailscale repository."
-    case "${ubuntu_codename}" in noble|jammy|focal|bionic|xenial) ;; *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;; esac
+    case "${ubuntu_codename}" in noble|resolute|jammy|focal|bionic|xenial) ;; *) fail "Unsupported Ubuntu base '${ubuntu_codename}' for the Tailscale repository." ;; esac
     log "Configuring the official Tailscale APT repository for Ubuntu ${ubuntu_codename}."
     sudo mkdir -p --mode=0755 /usr/share/keyrings
     curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 "https://pkgs.tailscale.com/stable/ubuntu/${ubuntu_codename}.noarmor.gpg" | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
@@ -87,7 +90,7 @@ load_catalog() {
                 INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
                 if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED")
                 elif [[ "${source}" == external:* ]]; then
-                    if [[ "${package}" == "wifiman" && "$(ubuntu_codename)" == "noble" ]]; then INSTALL_STATES+=("UNSUPPORTED"); else INSTALL_STATES+=("EXTERNAL"); fi
+                    if [[ "${package}" == "wifiman" && "$(ubuntu_codename)" =~ ^(noble|resolute)$ ]]; then INSTALL_STATES+=("UNSUPPORTED"); else INSTALL_STATES+=("EXTERNAL"); fi
                 elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
                 else INSTALL_STATES+=("UNAVAILABLE"); fi
                 ;;
@@ -108,7 +111,16 @@ validate_catalog() {
 }
 contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
-dry_run_external_package() { case "$1" in tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;; wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint 22.3 because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which Ubuntu 24.04 does not provide." ;; drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;; nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;; chirp) log "DRY RUN: would install CHIRP dependencies and install CHIRP-next from the official CHIRP Git repository with pipx." ;; *) fail "No external installer is defined for package '$1'." ;; esac; }
+dry_run_external_package() {
+    case "$1" in
+        tailscale) log "DRY RUN: would configure the official Tailscale APT repository and install Tailscale." ;;
+        wifiman) log "DRY RUN: WiFiman Desktop is skipped on Linux Mint ${mint_release} because the stable Ubiquiti 1.1.3 package requires libwebkit2gtk-4.0-37, which is not available on the Ubuntu base used by current supported FieldKit releases." ;;
+        drawio) log "DRY RUN: would resolve the latest official draw.io Desktop AMD64 package from GitHub and install it." ;;
+        nextcloud) log "DRY RUN: would download the latest official Nextcloud Desktop x86_64 AppImage and install it for the current user." ;;
+        chirp) log "DRY RUN: would install CHIRP dependencies and install CHIRP-next from the official CHIRP Git repository with pipx." ;;
+        *) fail "No external installer is defined for package '$1'." ;;
+    esac
+}
 require_amd64() { [[ "$(dpkg --print-architecture)" == amd64 ]] || fail "$1 currently requires an amd64/x86_64 system."; }
 
 require_downloaded_file() {
@@ -129,8 +141,8 @@ install_external_package() {
     case "${package}" in
         tailscale) log "Installing Tailscale from its configured official APT repository."; install_apt_packages install tailscale ;;
         wifiman)
-            if [[ "$(ubuntu_codename)" == "noble" ]]; then
-                log "WARNING: Skipping WiFiman Desktop on Linux Mint 22.3. Ubiquiti's stable Linux package 1.1.3 requires libwebkit2gtk-4.0-37, which is unavailable on Ubuntu 24.04. A newer Ubiquiti Linux build exists in Early Access, but FieldKit will not install an unreleased vendor package automatically."
+            if [[ "$(ubuntu_codename)" =~ ^(noble|resolute)$ ]]; then
+                log "WARNING: Skipping WiFiman Desktop on Linux Mint ${mint_release}. Ubiquiti's stable Linux package 1.1.3 requires libwebkit2gtk-4.0-37, which is unavailable on the Ubuntu base. FieldKit will not install an unreleased vendor package automatically."
                 return 0
             fi
             require_amd64 "WiFiman Desktop"; require_command curl
