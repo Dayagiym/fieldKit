@@ -6,6 +6,7 @@ set -Eeuo pipefail
 readonly SCRIPT_NAME="Mint FieldKit"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CONFIG_FILE="${SCRIPT_DIR}/../config/packages.conf"
+readonly MUSIC_CONFIG_FILE="${SCRIPT_DIR}/../config/music-packages.conf"
 readonly LOG_DIR="${HOME}/.local/state/fieldkit"
 readonly LOG_FILE="${LOG_DIR}/install.log"
 readonly WIFIMAN_DOWNLOAD_URL="https://desktop.wifiman.com/wifiman-desktop-1.1.3-amd64.deb"
@@ -14,6 +15,7 @@ readonly NEXTCLOUD_RELEASE_URL="https://download.nextcloud.com/desktop/releases/
 readonly CHIRP_GIT_URL="https://github.com/kk7ds/chirp.git"
 
 DRY_RUN=false
+MUSIC_FLAVOR=false
 TEMP_DIRS=()
 mkdir -p "${LOG_DIR}"
 
@@ -25,13 +27,22 @@ trap cleanup_temp_dirs EXIT
 new_temp_dir() { local dir; dir="$(mktemp -d)" || fail "Unable to create a temporary directory."; TEMP_DIRS+=("${dir}"); printf '%s\n' "${dir}"; }
 
 usage() { cat <<'EOF'
-Usage: fieldkit-install.sh [--dry-run]
+Usage: fieldkit-install.sh [--dry-run] [--music]
 
   --dry-run     Show package choices and planned changes without modifying the system.
+  --music       Add the Music flavor package set (Audacity and supporting audio tools).
   -h, --help    Show this help.
 EOF
 }
-while [[ $# -gt 0 ]]; do case "$1" in --dry-run) DRY_RUN=true ;; -h|--help) usage; exit 0 ;; *) fail "Unknown option: $1" ;; esac; shift; done
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true ;;
+        --music) MUSIC_FLAVOR=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+    shift
+done
 
 log "Starting ${SCRIPT_NAME} installer."
 [[ "${EUID}" -eq 0 ]] && fail "Do not run this script as root. Run it as your normal user; sudo will be requested when needed."
@@ -50,9 +61,7 @@ for desktop_value in "${XDG_CURRENT_DESKTOP:-}" "${XDG_SESSION_DESKTOP:-}" "${DE
         *MATE*|*MATE:*|*Cinnamon*|*CINNAMON*|X-Cinnamon|X-Cinnamon:*) desktop_detected=true; break ;;
     esac
 done
-if [[ "${desktop_detected}" == false ]] && pgrep -x cinnamon >/dev/null 2>&1; then
-    desktop_detected=true
-fi
+if [[ "${desktop_detected}" == false ]] && pgrep -x cinnamon >/dev/null 2>&1; then desktop_detected=true; fi
 [[ "${desktop_detected}" == true ]] || log "WARNING: MATE or Cinnamon desktop was not detected from the current session environment."
 
 is_installed() { local package="$1"; [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" == "install ok installed" ]]; }
@@ -97,17 +106,39 @@ load_catalog() {
             *) fail "Invalid action '${action}' in ${CONFIG_FILE}" ;;
         esac
     done < "${CONFIG_FILE}"
+
+    if [[ "${MUSIC_FLAVOR}" == true ]]; then
+        [[ -f "${MUSIC_CONFIG_FILE}" ]] || fail "Music flavor catalog not found: ${MUSIC_CONFIG_FILE}"
+        while IFS='|' read -r action package name recommendation reason source; do
+            [[ -z "${action}" || "${action}" == \#* ]] && continue
+            case "${action}" in
+                install)
+                    INSTALL_PACKAGES+=("${package}"); INSTALL_NAMES+=("${name}"); INSTALL_RECS+=("${recommendation}"); INSTALL_REASONS+=("${reason}"); INSTALL_SOURCES+=("${source}")
+                    if is_installed "${package}"; then INSTALL_STATES+=("INSTALLED")
+                    elif [[ "${source}" == external:* ]]; then INSTALL_STATES+=("EXTERNAL")
+                    elif apt_package_available "${package}"; then INSTALL_STATES+=("AVAILABLE")
+                    else INSTALL_STATES+=("UNAVAILABLE"); fi
+                    ;;
+                *) fail "Invalid action '${action}' in ${MUSIC_CONFIG_FILE}" ;;
+            esac
+        done < "${MUSIC_CONFIG_FILE}"
+    fi
 }
-validate_catalog() {
-    local line_number=0 line action package name recommendation reason source extra
+
+validate_catalog_file() {
+    local catalog="$1" line_number=0 line action package name recommendation reason source extra
     while IFS= read -r line || [[ -n "${line}" ]]; do
         ((line_number += 1)); [[ -z "${line}" || "${line}" == \#* ]] && continue
         IFS='|' read -r action package name recommendation reason source extra <<< "${line}"
-        [[ -z "${action}" || -z "${package}" || -z "${name}" || -z "${recommendation}" || -z "${reason}" || -z "${source}" || -n "${extra}" ]] && fail "Malformed package catalog entry at ${CONFIG_FILE}:${line_number}"
-        case "${action}" in install|remove) ;; *) fail "Invalid action '${action}' at ${CONFIG_FILE}:${line_number}" ;; esac
-        case "${source}" in apt|external:*) ;; *) fail "Invalid source '${source}' at ${CONFIG_FILE}:${line_number}" ;; esac
-        [[ "${package}" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || fail "Invalid package name '${package}' at ${CONFIG_FILE}:${line_number}"
-    done < "${CONFIG_FILE}"
+        [[ -z "${action}" || -z "${package}" || -z "${name}" || -z "${recommendation}" || -z "${reason}" || -z "${source}" || -n "${extra}" ]] && fail "Malformed package catalog entry at ${catalog}:${line_number}"
+        case "${action}" in install|remove) ;; *) fail "Invalid action '${action}' at ${catalog}:${line_number}" ;; esac
+        case "${source}" in apt|external:*) ;; *) fail "Invalid source '${source}' at ${catalog}:${line_number}" ;; esac
+        [[ "${package}" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || fail "Invalid package name '${package}' at ${catalog}:${line_number}"
+    done < "${catalog}"
+}
+validate_catalog() {
+    validate_catalog_file "${CONFIG_FILE}"
+    [[ "${MUSIC_FLAVOR}" == true ]] && validate_catalog_file "${MUSIC_CONFIG_FILE}"
 }
 contains_number() { local needle="$1"; shift; local value; for value in "$@"; do [[ "${value}" == "${needle}" ]] && return 0; done; return 1; }
 
@@ -141,10 +172,7 @@ install_external_package() {
     case "${package}" in
         tailscale) log "Installing Tailscale from its configured official APT repository."; install_apt_packages install tailscale ;;
         wifiman)
-            if [[ "$(ubuntu_codename)" =~ ^(noble|resolute)$ ]]; then
-                log "WARNING: Skipping WiFiman Desktop on Linux Mint ${mint_release}. Ubiquiti's stable Linux package 1.1.3 requires libwebkit2gtk-4.0-37, which is unavailable on the Ubuntu base. FieldKit will not install an unreleased vendor package automatically."
-                return 0
-            fi
+            if [[ "$(ubuntu_codename)" =~ ^(noble|resolute)$ ]]; then log "WARNING: Skipping WiFiman Desktop on Linux Mint ${mint_release}. Ubiquiti's stable Linux package 1.1.3 requires libwebkit2gtk-4.0-37, which is unavailable on the Ubuntu base. FieldKit will not install an unreleased vendor package automatically."; return 0; fi
             require_amd64 "WiFiman Desktop"; require_command curl
             local temp_dir deb_file; temp_dir="$(new_temp_dir)"; deb_file="${temp_dir}/wifiman-desktop.deb"
             curl_download "${WIFIMAN_DOWNLOAD_URL}" "${deb_file}" "the official Ubiquiti WiFiman Desktop Linux package"
@@ -185,17 +213,17 @@ EOF
             require_amd64 "CHIRP"; require_command git
             install_apt_packages install python3-wxgtk4.0 python3-yattag pipx git
             if pipx list 2>/dev/null | grep -qE 'package chirp '; then log "Updating the existing pipx-managed CHIRP installation."; pipx uninstall chirp; fi
-            log "Installing CHIRP-next from the official CHIRP Git repository."
-            pipx install --system-site-packages "git+${CHIRP_GIT_URL}"
+            log "Installing CHIRP-next from the official CHIRP Git repository."; pipx install --system-site-packages "git+${CHIRP_GIT_URL}"
             log "CHIRP-next installed. Launch it with 'chirp' or from the desktop application menu."
             ;;
+        *) install_apt_packages install "${package}" ;;
     esac
 }
 
 choose_packages() {
     local mode="${1}" title="${2}"
     local -a packages names recs reasons sources states
-    local -a selected=() available_numbers=() recommended_numbers=() all_numbers=()
+    local -a selected=() recommended_numbers=() all_numbers=()
     local i choice
     if [[ "${mode}" == remove ]]; then packages=("${REMOVE_PACKAGES[@]}"); names=("${REMOVE_NAMES[@]}"); recs=("${REMOVE_RECS[@]}"); reasons=("${REMOVE_REASONS[@]}"); sources=("${REMOVE_SOURCES[@]}"); states=("${REMOVE_STATES[@]}")
     else packages=("${INSTALL_PACKAGES[@]}"); names=("${INSTALL_NAMES[@]}"); recs=("${INSTALL_RECS[@]}"); reasons=("${INSTALL_REASONS[@]}"); sources=("${INSTALL_SOURCES[@]}"); states=("${INSTALL_STATES[@]}"); fi
@@ -224,12 +252,12 @@ load_catalog
 REMOVE_SELECTED=()
 INSTALL_SELECTED=()
 choose_packages remove "FieldKit — Remove applications"
-choose_packages install "FieldKit — Install applications"
+install_title="FieldKit — Install applications"
+[[ "${MUSIC_FLAVOR}" == true ]] && install_title="FieldKit — Install applications (Music flavor enabled)"
+choose_packages install "${install_title}"
 
 if [[ "${DRY_RUN}" == true ]]; then
-    if [[ "${#REMOVE_SELECTED[@]}" -gt 0 ]]; then
-        for package in "${REMOVE_SELECTED[@]}"; do log "DRY RUN: would remove ${package}."; done
-    fi
+    if [[ "${#REMOVE_SELECTED[@]}" -gt 0 ]]; then for package in "${REMOVE_SELECTED[@]}"; do log "DRY RUN: would remove ${package}."; done; fi
     if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
         for package in "${INSTALL_SELECTED[@]}"; do
             if [[ "${package}" == "tailscale" ]]; then dry_run_external_package tailscale
@@ -244,8 +272,7 @@ fi
 if [[ "${#REMOVE_SELECTED[@]}" -gt 0 ]]; then log "Removing selected packages."; install_apt_packages remove "${REMOVE_SELECTED[@]}"; fi
 
 if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
-    apt_packages=()
-    external_packages=()
+    apt_packages=(); external_packages=()
     for package in "${INSTALL_SELECTED[@]}"; do
         source=""
         for i in "${!INSTALL_PACKAGES[@]}"; do [[ "${INSTALL_PACKAGES[$i]}" == "${package}" ]] && source="${INSTALL_SOURCES[$i]}" && break; done
@@ -258,4 +285,4 @@ if [[ "${#INSTALL_SELECTED[@]}" -gt 0 ]]; then
     done
 fi
 
-log "FieldKit installer completed. Review ${LOG_FILE}."
+log "${SCRIPT_NAME} installer completed."
