@@ -2,7 +2,7 @@
 
 > **A lightweight, repeatable Linux Mint workstation for network technicians, structured cabling professionals, and IT field service.**
 
-Mint FieldKit transforms a standard **Linux Mint 22.3 MATE or Cinnamon** installation into a practical, lean, field-ready workstation. It is designed around the realities of working on customer sites: limited storage, unfamiliar networks, offline work, equipment diagnostics, documentation, and the need to get useful tools running quickly.
+Mint FieldKit transforms a standard **Linux Mint 22.3 or 23 MATE or Cinnamon** installation into a practical, lean, field-ready workstation. It is designed around the realities of working on customer sites: limited storage, unfamiliar networks, offline work, equipment diagnostics, documentation, and the need to get useful tools running quickly.
 
 ---
 
@@ -18,11 +18,26 @@ It can:
 - 📡 Support Wi-Fi and UniFi diagnostics
 - 🔐 Provide secure remote-access tools
 - 💾 Diagnose storage and hardware
+- 🗄️ Provide ZFS administration, snapshots, and replication tools
 - 📐 Create network diagrams, floor plans, and rack layouts
 - ☁️ Synchronize field documentation with Nextcloud
 - 🧪 Preview changes safely with dry-run mode
 - 📦 Keep the package catalog separate from the installer logic
 - 🖥️ Support both Linux Mint MATE and Cinnamon flavors
+
+---
+
+## 🖥️ Compatibility
+
+| Linux Mint | Desktop | Status |
+|---|---|---|
+| 22.3 | MATE / Cinnamon | **SUPPORTED / TESTED** |
+| 23.x | MATE / Cinnamon | **SUPPORTED / TESTING** |
+| Other versions | Any | **NOT SUPPORTED** |
+
+Mint 23 is based on Ubuntu 26.04. FieldKit therefore treats Mint 23 as a compatibility target while continuing to validate external vendor packages and storage tooling against the new Ubuntu base.
+
+In particular, Mint 23 testing includes Tailscale's Ubuntu `resolute` repository, ZFS tooling, Sanoid/Syncoid, CHIRP dependencies, draw.io, and Nextcloud Desktop. WiFiman remains skipped when its stable vendor package is incompatible with the Ubuntu base.
 
 ---
 
@@ -71,7 +86,7 @@ FieldKit is designed for people who work with real infrastructure, including:
 FieldKit's recommended networking toolkit includes:
 
 - **Nmap** — network discovery, port scanning, and service identification
-- **WiFiman** — Wi-Fi analysis, speed testing, discovery, and UniFi diagnostics
+- **WiFiman** — Wi-Fi analysis, speed testing, discovery, and UniFi diagnostics when a compatible vendor package is available
 - **iperf3** — bandwidth and network performance testing
 - **MTR** — live path analysis combining ping and traceroute
 - **tcpdump** — packet capture and analysis
@@ -86,6 +101,21 @@ FieldKit's recommended networking toolkit includes:
 **Tailscale** provides secure mesh-VPN connectivity without requiring SSH or VNC services to be exposed directly to the Internet.
 
 This makes it particularly useful when a technician needs to reach a FieldKit workstation remotely from another trusted system.
+
+### 💾 Storage, ZFS & Replication
+
+FieldKit's storage toolkit includes:
+
+- **smartmontools** — SMART health and storage diagnostics
+- **ncdu** — interactive disk-usage analysis
+- **duf** — filesystem and storage overview
+- **lsof** — open-file, process, and socket diagnostics
+- **NTFS support** — read/write support for external NTFS media
+- **ZFS tools (`zfsutils-linux`)** — pools, datasets, snapshots, and ZFS administration
+- **Sanoid** — automated ZFS snapshot policies and retention
+- **Syncoid** — ZFS snapshot replication over local or SSH connections
+
+Sanoid and Syncoid are provided by the Ubuntu/Debian `sanoid` package and are treated as one recommended FieldKit package.
 
 ### 📐 Diagrams & Documentation
 
@@ -265,7 +295,7 @@ FieldKit was originally developed around a **Lenovo Chromebook 14e** converted f
 - **4 GB RAM**
 - **32 GB storage**
 
-The project now also supports Cinnamon while retaining those lightweight constraints as part of FieldKit's design goals.
+The project now also supports Cinnamon and is being prepared for Mint 23 while retaining those lightweight constraints as part of FieldKit's design goals.
 
 ---
 
