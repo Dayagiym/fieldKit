@@ -21,6 +21,7 @@ It can:
 - 🗄️ Provide ZFS administration, snapshots, and replication tools
 - 📐 Create network diagrams, floor plans, and rack layouts
 - ☁️ Synchronize field documentation with Nextcloud
+- 🎵 Add an optional Music flavor for audio work
 - 🧪 Preview changes safely with dry-run mode
 - 📦 Keep the package catalog separate from the installer logic
 - 🖥️ Support both Linux Mint MATE and Cinnamon flavors
@@ -43,7 +44,7 @@ In particular, Mint 23 testing includes Tailscale's Ubuntu `resolute` repository
 
 ## 🖥️ Desktop Flavors
 
-FieldKit uses one common package catalog and installer engine for the supported Mint desktop environments.
+FieldKit uses one common installer engine with a shared core package catalog. Flavor-specific catalogs can add specialized applications without putting them on every workstation.
 
 ### MATE
 
@@ -63,6 +64,39 @@ The Cinnamon flavor provides the same field toolkit while explicitly validating 
 
 The Cinnamon launcher delegates to the common installer, so package recommendations and installer behavior remain consistent between flavors.
 
+### Music flavor
+
+The Music flavor adds audio-production and audio-troubleshooting applications without making them part of the lean field-tech baseline.
+
+The recommended Music flavor includes:
+
+- **Audacity** — audio recording, editing, cleanup, and conversion
+- **FFmpeg** — command-line media conversion and processing
+- **Easy Effects** — PipeWire audio effects and processing
+- **PulseAudio Volume Control (`pavucontrol`)** — detailed audio routing and device control
+
+Optional Music applications include **Ardour** and **Carla** for more advanced recording, mixing, routing, and plugin workflows.
+
+Enable the Music flavor with:
+
+```bash
+./scripts/fieldkit-install.sh --music --dry-run
+```
+
+It can be combined with the Cinnamon launcher:
+
+```bash
+./scripts/fieldkit-install-cinnamon.sh --music --dry-run
+```
+
+The Music flavor package catalog is maintained separately in:
+
+```text
+config/music-packages.conf
+```
+
+This keeps audio applications out of the standard FieldKit recommendations while allowing the same workstation to be deployed for both technical and music-oriented work.
+
 ---
 
 ## 👷 Intended Users
@@ -76,6 +110,7 @@ FieldKit is designed for people who work with real infrastructure, including:
 - 🖥️ IT support and field-service technicians
 - 🗄️ Server and systems administrators
 - 🛠️ Hardware technicians
+- 🎙️ Technicians who also need a practical audio workstation
 
 ---
 
@@ -132,6 +167,14 @@ Sanoid and Syncoid are provided by the Ubuntu/Debian `sanoid` package and are tr
 
 The **Nextcloud Desktop Client** is intended for synchronizing job documentation, diagrams, photos, configuration files, reports, and other field data with a technician's Nextcloud server.
 
+### 🎵 Music & Audio
+
+The optional Music flavor provides a practical audio toolkit without bloating the standard field installation.
+
+**Audacity** is the primary Music flavor application for recording, editing, cleanup, and basic production. FFmpeg provides broad media conversion capabilities, while Easy Effects and `pavucontrol` provide useful PipeWire/audio-routing diagnostics and processing.
+
+For users who need a full digital audio workstation, Ardour and Carla are available as optional selections.
+
 ---
 
 ## 💻 System & Hardware Utilities
@@ -185,6 +228,12 @@ or for Cinnamon:
 ./scripts/fieldkit-install-cinnamon.sh --dry-run
 ```
 
+For the Music flavor:
+
+```bash
+./scripts/fieldkit-install.sh --music --dry-run
+```
+
 Dry-run mode shows what FieldKit would remove or install without changing the system.
 
 The interactive menus allow the technician to choose:
@@ -200,15 +249,21 @@ This makes FieldKit useful both as an automated deployment tool and as an intera
 
 ## 📦 Package Catalog
 
-Recommendations are maintained in:
+Core recommendations are maintained in:
 
 ```text
 config/packages.conf
 ```
 
-The installer reads the catalog rather than maintaining a large hard-coded package list.
+Music flavor recommendations are maintained separately in:
 
-The catalog supports different application sources, including:
+```text
+config/music-packages.conf
+```
+
+The installer reads these catalogs rather than maintaining a large hard-coded package list.
+
+The catalogs support different application sources, including:
 
 - `apt` — standard Mint/Ubuntu packages
 - `external:tailscale` — Tailscale
@@ -217,7 +272,7 @@ The catalog supports different application sources, including:
 - `external:nextcloud` — Nextcloud Desktop Client
 - `external:chirp` — CHIRP
 
-Both desktop flavors use the same catalog.
+Flavor-specific packages are only loaded when the corresponding flavor is enabled. The standard MATE and Cinnamon field deployments therefore remain lean.
 
 ---
 
@@ -243,6 +298,20 @@ chmod +x scripts/fieldkit-install-cinnamon.sh
 ./scripts/fieldkit-install-cinnamon.sh
 ```
 
+### Music flavor
+
+The Music flavor can be added to either desktop environment:
+
+```bash
+./scripts/fieldkit-install.sh --music
+```
+
+or:
+
+```bash
+./scripts/fieldkit-install-cinnamon.sh --music
+```
+
 For a first pass, use dry-run mode.
 
 > **Tip:** FieldKit is designed to be run as a normal user. It requests elevated privileges only for operations that require them.
@@ -261,11 +330,11 @@ A fresh Mint installation should be transformable into a predictable working env
 
 ### 🛠️ Keep It Maintainable
 
-The package catalog is separated from installer logic so applications can be added or removed without rewriting the entire script. Desktop flavors share the same installer engine and catalog rather than creating separate forks.
+The package catalogs are separated from installer logic so applications can be added or removed without rewriting the entire script. Desktop flavors share the same installer engine while specialized flavors can maintain their own package sets.
 
 ### 🎯 Keep It Practical
 
-FieldKit favors tools that solve actual problems encountered in networking, structured cabling, infrastructure, and IT service work.
+FieldKit favors tools that solve actual problems encountered in networking, structured cabling, infrastructure, IT service, and selected specialty workflows.
 
 ### 📴 Keep It Field-Ready
 
@@ -277,7 +346,7 @@ Not every job site has reliable Internet access. Wherever practical, FieldKit fa
 
 Future development may include:
 
-- 📦 Role-based package profiles
+- 📦 Additional role-based package profiles
 - 🧾 Automated system and hardware reports
 - ⌨️ Field-oriented shell aliases and commands
 - 🔄 Recovery and backup utilities
